@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: flashdeal-mysql
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_DATABASE: hmdp
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --default-authentication-plugin=mysql_native_password
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - flashdeal_mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7
+    container_name: flashdeal-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --bind 0.0.0.0
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - flashdeal_redis_data:/data
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: flashdeal-rabbitmq
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - flashdeal_rabbitmq_data:/var/lib/rabbitmq
+
+volumes:
+  flashdeal_mysql_data:
+  flashdeal_redis_data:
+  flashdeal_rabbitmq_data:

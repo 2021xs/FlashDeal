@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.flashdeal.mapper.SeckillVoucherMapper">
+
+    <update id="decrementStockBatch">
+        UPDATE tb_seckill_voucher
+        SET stock = stock - #{count}
+        WHERE voucher_id = #{voucherId}
+          AND stock >= #{count}
+    </update>
+</mapper>

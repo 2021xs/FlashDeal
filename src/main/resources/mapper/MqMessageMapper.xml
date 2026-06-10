@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.flashdeal.mapper.MqMessageMapper">
+
+    <update id="updateStatusIfIn">
+        UPDATE tb_mq_message
+        SET status = #{toStatus},
+            fail_reason = #{failReason},
+            next_retry_time = #{nextRetryTime}
+        WHERE id = #{id}
+          AND status IN
+        <foreach collection="fromStatuses" item="status" open="(" separator="," close=")">
+            #{status}
+        </foreach>
+    </update>
+
+    <update id="updateStatusByBizIfIn">
+        UPDATE tb_mq_message
+        SET status = #{toStatus},
+            fail_reason = #{failReason},
+            next_retry_time = #{nextRetryTime}
+        WHERE biz_type = #{bizType}
+          AND biz_id = #{bizId}
+          AND status IN
+        <foreach collection="fromStatuses" item="status" open="(" separator="," close=")">
+            #{status}
+        </foreach>
+    </update>
+
+    <update id="markRetrying">
+        UPDATE tb_mq_message
+        SET status = 'RETRYING',
+            retry_count = retry_count + 1,
+            next_retry_time = #{nextRetryTime},
+            fail_reason = #{failReason}
+        WHERE id = #{id}
+          AND retry_count = #{expectedRetryCount}
+          AND retry_count &lt; max_retry_count
+          AND status IN
+        <foreach collection="fromStatuses" item="status" open="(" separator="," close=")">
+            #{status}
+        </foreach>
+    </update>
+
+    <update id="markNeedManualAfterRetryExceeded">
+        UPDATE tb_mq_message
+        SET status = 'NEED_MANUAL',
+            fail_reason = #{failReason},
+            next_retry_time = NULL
+        WHERE id = #{id}
+          AND status = #{expectedStatus}
+          AND retry_count = #{expectedRetryCount}
+          AND retry_count &gt;= max_retry_count
+    </update>
+
+    <update id="scheduleNextRetry">
+        UPDATE tb_mq_message
+        SET next_retry_time = #{nextRetryTime},
+            fail_reason = #{failReason}
+        WHERE id = #{id}
+          AND status IN
+        <foreach collection="fromStatuses" item="status" open="(" separator="," close=")">
+            #{status}
+        </foreach>
+    </update>
+
+    <select id="selectRetryableMessages" resultType="com.flashdeal.entity.MqMessage">
+        SELECT id, biz_type, biz_id, exchange_name, routing_key, message_body,
+               status, retry_count, max_retry_count, next_retry_time,
+               fail_reason, create_time, update_time
+        FROM tb_mq_message
+        WHERE retry_count &lt; max_retry_count
+          AND (
+            (status IN
+            <foreach collection="statuses" item="status" open="(" separator="," close=")">
+                #{status}
+            </foreach>
+             AND (next_retry_time IS NULL OR next_retry_time &lt;= #{now}))
+            OR (status = 'SENT' AND update_time &lt;= #{sentBefore})
+          )
+        ORDER BY update_time ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectExceededRetryMessages" resultType="com.flashdeal.entity.MqMessage">
+        SELECT id, biz_type, biz_id, exchange_name, routing_key, message_body,
+               status, retry_count, max_retry_count, next_retry_time,
+               fail_reason, create_time, update_time
+        FROM tb_mq_message
+        WHERE retry_count &gt;= max_retry_count
+          AND (
+            (status IN
+            <foreach collection="statuses" item="status" open="(" separator="," close=")">
+                #{status}
+            </foreach>
+             AND (next_retry_time IS NULL OR next_retry_time &lt;= #{now}))
+            OR (status = 'SENT' AND update_time &lt;= #{sentBefore})
+          )
+        ORDER BY update_time ASC
+        LIMIT #{limit}
+    </select>
+</mapper>

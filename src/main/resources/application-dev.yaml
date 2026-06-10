@@ -1,17 +1,18 @@
 server:
   port: 8081
+
 spring:
   application:
     name: flash-deal
   datasource:
     driver-class-name: com.mysql.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&serverTimezone=UTC
+    url: jdbc:mysql://127.0.0.1:3307/hmdp?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
     username: root
-    password: 123
+    password: 123456
   redis:
-    host: 192.168.150.101
+    host: 127.0.0.1
     port: 6379
-    password: 123321
+    password: ""
     lettuce:
       pool:
         max-active: 10
@@ -19,9 +20,9 @@ spring:
         min-idle: 1
         time-between-eviction-runs: 10s
   jackson:
-    default-property-inclusion: non_null # JSON处理时忽略非空字段
+    default-property-inclusion: non_null
   rabbitmq:
-    host: 192.168.150.101
+    host: 127.0.0.1
     port: 5672
     username: guest
     password: guest
@@ -38,11 +39,17 @@ spring:
         retry:
           enabled: true
           max-attempts: 3
+
 mybatis-plus:
-  type-aliases-package: com.flashdeal.entity # 别名扫描包
+  type-aliases-package: com.flashdeal.entity
+
+local-cache:
+  shop:
+    enabled: true
+
 order:
   timeout:
-    seconds: 900
+    seconds: 30
 outbox:
   order-timeout:
     enabled: true
@@ -55,6 +62,7 @@ outbox:
 order-timeout:
   close-dlq:
     max-fail-count: 3
+
 seckill:
   stock-sync:
     enabled: true
@@ -87,6 +95,7 @@ seckill:
       concurrency: 1
       max-concurrency: 1
       retry-times: 2
+
 logging:
   level:
     com.flashdeal: debug

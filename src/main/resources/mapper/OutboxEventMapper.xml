@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.flashdeal.mapper.OutboxEventMapper">
+
+    <select id="selectPublishable" resultType="com.flashdeal.entity.OutboxEvent">
+        SELECT id, event_id, event_type, biz_key, exchange_name, routing_key, payload,
+               status, retry_count, max_retry_count, next_retry_time, fail_reason,
+               expire_time, sent_time, created_time, updated_time
+        FROM tb_outbox_event
+        WHERE event_type = 'ORDER_TIMEOUT'
+          AND status IN ('INIT', 'FAILED')
+          AND retry_count &lt; max_retry_count
+          AND (next_retry_time IS NULL OR next_retry_time &lt;= #{now})
+        ORDER BY updated_time ASC
+        LIMIT #{limit}
+    </select>
+
+    <update id="claimSending">
+        UPDATE tb_outbox_event
+        SET status = 'SENDING',
+            fail_reason = NULL
+        WHERE id = #{id}
+          AND status = #{expectedStatus}
+          AND retry_count = #{expectedRetryCount}
+          AND retry_count &lt; max_retry_count
+    </update>
+
+    <update id="markSent">
+        UPDATE tb_outbox_event
+        SET status = 'SENT',
+            sent_time = NOW(),
+            next_retry_time = NULL,
+            fail_reason = NULL
+        WHERE id = #{id}
+          AND status = 'SENDING'
+          AND retry_count = #{expectedRetryCount}
+    </update>
+
+    <update id="markPublishFailed">
+        UPDATE tb_outbox_event
+        SET retry_count = retry_count + 1,
+            status = CASE
+                WHEN retry_count + 1 &gt;= max_retry_count THEN 'NEED_MANUAL'
+                ELSE 'FAILED'
+            END,
+            next_retry_time = CASE
+                WHEN retry_count + 1 &gt;= max_retry_count THEN NULL
+                ELSE #{nextRetryTime}
+            END,
+            fail_reason = #{failReason}
+        WHERE id = #{id}
+          AND status = 'SENDING'
+          AND retry_count = #{expectedRetryCount}
+    </update>
+
+    <update id="recoverStuckSending">
+        UPDATE tb_outbox_event
+        SET retry_count = retry_count + 1,
+            status = CASE
+                WHEN retry_count + 1 &gt;= max_retry_count THEN 'NEED_MANUAL'
+                ELSE 'FAILED'
+            END,
+            next_retry_time = CASE
+                WHEN retry_count + 1 &gt;= max_retry_count THEN NULL
+                ELSE #{nextRetryTime}
+            END,
+            fail_reason = 'OUTBOX_SENDING_TIMEOUT'
+        WHERE status = 'SENDING'
+          AND event_type = 'ORDER_TIMEOUT'
+          AND updated_time &lt;= #{staleBefore}
+        ORDER BY updated_time ASC
+        LIMIT #{limit}
+    </update>
+
+    <select id="selectNeedManual" resultType="com.flashdeal.entity.OutboxEvent">
+        SELECT id, event_id, event_type, biz_key, exchange_name, routing_key, payload,
+               status, retry_count, max_retry_count, next_retry_time, fail_reason,
+               expire_time, sent_time, created_time, updated_time
+        FROM tb_outbox_event
+        WHERE status = 'NEED_MANUAL'
+          AND event_type = 'ORDER_TIMEOUT'
+        ORDER BY updated_time ASC
+        LIMIT #{limit}
+    </select>
+</mapper>

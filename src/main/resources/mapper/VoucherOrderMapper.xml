@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.flashdeal.mapper.VoucherOrderMapper">
+
+    <insert id="insertBatch">
+        INSERT INTO tb_voucher_order
+            (id, user_id, voucher_id, pay_type, status, create_time)
+        VALUES
+        <foreach collection="orders" item="order" separator=",">
+            (#{order.id}, #{order.userId}, #{order.voucherId}, #{order.payType}, #{order.status}, #{order.createTime})
+        </foreach>
+    </insert>
+
+    <select id="selectExistingUserVoucherPairs" resultType="com.flashdeal.entity.VoucherOrder">
+        SELECT user_id, voucher_id
+        FROM tb_voucher_order
+        WHERE (user_id, voucher_id) IN
+        <foreach collection="orders" item="order" open="(" separator="," close=")">
+            (#{order.userId}, #{order.voucherId})
+        </foreach>
+    </select>
+</mapper>

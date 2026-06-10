@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.flashdeal.mapper.OrderTimeoutCloseFailMapper">
+
+    <insert id="upsertFailure">
+        INSERT INTO tb_order_timeout_close_fail
+            (order_id, user_id, voucher_id, fail_count, max_fail_count, last_fail_reason, status, next_retry_time)
+        VALUES
+            (#{orderId}, #{userId}, #{voucherId}, 1, #{maxFailCount}, #{failReason},
+             CASE WHEN #{maxFailCount} &lt;= 1 THEN 'NEED_MANUAL' ELSE 'INIT' END,
+             #{nextRetryTime})
+        ON DUPLICATE KEY UPDATE
+            user_id = VALUES(user_id),
+            voucher_id = VALUES(voucher_id),
+            fail_count = fail_count + 1,
+            max_fail_count = VALUES(max_fail_count),
+            last_fail_reason = VALUES(last_fail_reason),
+            status = CASE
+                WHEN fail_count + 1 &gt;= VALUES(max_fail_count) THEN 'NEED_MANUAL'
+                ELSE 'INIT'
+            END,
+            next_retry_time = VALUES(next_retry_time)
+    </insert>
+</mapper>
