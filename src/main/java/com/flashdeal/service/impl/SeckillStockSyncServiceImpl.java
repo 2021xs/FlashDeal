@@ -50,7 +50,7 @@ public class SeckillStockSyncServiceImpl implements SeckillStockSyncService, App
         LocalDateTime now = LocalDateTime.now();
         List<SeckillVoucher> vouchers = seckillVoucherService.query()
                 .ge("stock", 0)
-                .gt("begin_time", now)
+                .and(wrapper -> wrapper.isNull("end_time").or().gt("end_time", now))
                 .list();
         for (SeckillVoucher voucher : vouchers) {
             syncOne(voucher, force, result);
@@ -62,10 +62,13 @@ public class SeckillStockSyncServiceImpl implements SeckillStockSyncService, App
         Long voucherId = voucher.getVoucherId();
         String key = SECKILL_STOCK_KEY + voucherId;
         LocalDateTime beginTime = voucher.getBeginTime();
-        if (beginTime == null || !LocalDateTime.now().isBefore(beginTime)) {
+        LocalDateTime endTime = voucher.getEndTime();
+        LocalDateTime now = LocalDateTime.now();
+        ActivityStatus activityStatus = resolveActivityStatus(beginTime, endTime, now);
+        if (activityStatus != ActivityStatus.NOT_STARTED) {
             result.addSkipped();
-            log.warn("Skip seckill stock sync because activity has started or begin time is missing, voucherId={}, beginTime={}, force={}",
-                    voucherId, beginTime, force);
+            log.warn("Reject seckill stock sync because activity is not safely initializable, voucherId={}, mysqlStock={}, redisKey={}, activityStatus={}, beginTime={}, endTime={}, force={}",
+                    voucherId, voucher.getStock(), key, activityStatus, beginTime, endTime, force);
             return;
         }
         try {
@@ -83,5 +86,25 @@ public class SeckillStockSyncServiceImpl implements SeckillStockSyncService, App
             result.addFailed();
             log.error("Sync seckill stock failed, voucherId={}, key={}", voucherId, key, e);
         }
+    }
+
+    private ActivityStatus resolveActivityStatus(LocalDateTime beginTime, LocalDateTime endTime, LocalDateTime now) {
+        if (beginTime == null) {
+            return ActivityStatus.UNKNOWN;
+        }
+        if (now.isBefore(beginTime)) {
+            return ActivityStatus.NOT_STARTED;
+        }
+        if (endTime != null && now.isAfter(endTime)) {
+            return ActivityStatus.ENDED;
+        }
+        return ActivityStatus.RUNNING;
+    }
+
+    private enum ActivityStatus {
+        NOT_STARTED,
+        RUNNING,
+        ENDED,
+        UNKNOWN
     }
 }

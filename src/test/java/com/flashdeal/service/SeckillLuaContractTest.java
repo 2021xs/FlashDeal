@@ -29,6 +29,22 @@ class SeckillLuaContractTest {
         assertTrue(lua.contains("redis.call('del', reservationKey)"));
     }
 
+    @Test
+    void claimLuaShouldAllowProcessingTimeoutReclaim() throws Exception {
+        String lua = resource("seckill_reservation_claim.lua");
+        assertTrue(lua.contains("local processingPrefix = ARGV[3] .. ':PROCESSING:'"));
+        assertTrue(lua.contains("nowMillis - processingTime >= processingTimeoutMillis"));
+        assertTrue(lua.contains("redis.call('set', reservationKey, ARGV[3] .. ':PROCESSING:' .. ARGV[4])"));
+    }
+
+    @Test
+    void commitLuaShouldMarkReservationCommittedAndCleanPendingEvidence() throws Exception {
+        String lua = resource("seckill_reservation_commit.lua");
+        assertTrue(lua.contains("orderId .. ':COMMITTED:' .. nowMillis"));
+        assertTrue(lua.contains("redis.call('zrem', pendingKey, orderId)"));
+        assertTrue(lua.contains("redis.call('del', pendingDetailKey)"));
+    }
+
     private String resource(String name) throws Exception {
         return StreamUtils.copyToString(
                 getClass().getClassLoader().getResourceAsStream(name),

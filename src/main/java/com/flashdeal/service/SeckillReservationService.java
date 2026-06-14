@@ -1,6 +1,8 @@
 package com.flashdeal.service;
 
 import com.flashdeal.dto.SeckillPendingDetail;
+import com.flashdeal.dto.SeckillReservationState;
+import com.flashdeal.dto.SeckillReservationStatus;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
@@ -24,6 +26,7 @@ public class SeckillReservationService {
     private static final DefaultRedisScript<Long> CLAIM_SCRIPT = script("seckill_reservation_claim.lua");
     private static final DefaultRedisScript<Long> ROLLBACK_SCRIPT = script("seckill_rollback.lua");
     private static final DefaultRedisScript<Long> CLEANUP_SCRIPT = script("seckill_pending_cleanup.lua");
+    private static final DefaultRedisScript<Long> COMMIT_SCRIPT = script("seckill_reservation_commit.lua");
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
@@ -35,8 +38,22 @@ public class SeckillReservationService {
         Long result = stringRedisTemplate.execute(
                 CLAIM_SCRIPT,
                 Collections.emptyList(),
-                voucherId.toString(), userId.toString(), orderId.toString(), String.valueOf(System.currentTimeMillis()));
+                voucherId.toString(),
+                userId.toString(),
+                orderId.toString(),
+                String.valueOf(System.currentTimeMillis()),
+                String.valueOf(getProcessingTimeoutMillis()));
         return result != null && result == 1L;
+    }
+
+    public void commit(Long voucherId, Long userId, Long orderId) {
+        stringRedisTemplate.execute(
+                COMMIT_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(),
+                userId.toString(),
+                orderId.toString(),
+                String.valueOf(System.currentTimeMillis()));
     }
 
     public Long rollback(Long voucherId, Long userId, Long orderId) {
@@ -89,6 +106,10 @@ public class SeckillReservationService {
         return stringRedisTemplate.opsForValue().get(SECKILL_RESERVATION_KEY + voucherId + ":" + userId);
     }
 
+    public SeckillReservationState getReservationState(Long voucherId, Long userId) {
+        return parseReservation(getReservation(voucherId, userId));
+    }
+
     public long getProcessingTimeoutMillis() {
         return Math.max(0L, processingTimeoutSeconds) * 1000L;
     }
@@ -110,5 +131,29 @@ public class SeckillReservationService {
             log.warn("Invalid seckill pending detail number, value={}", value);
             return null;
         }
+    }
+
+    public SeckillReservationState parseReservation(String value) {
+        SeckillReservationState state = new SeckillReservationState();
+        state.setRawValue(value);
+        if (value == null || value.trim().isEmpty()) {
+            state.setStatus(SeckillReservationStatus.MISSING);
+            return state;
+        }
+        String[] parts = value.split(":", 3);
+        if (parts.length < 2) {
+            state.setStatus(SeckillReservationStatus.UNKNOWN);
+            return state;
+        }
+        state.setOrderId(parseLong(parts[0]));
+        try {
+            state.setStatus(SeckillReservationStatus.valueOf(parts[1]));
+        } catch (IllegalArgumentException e) {
+            state.setStatus(SeckillReservationStatus.UNKNOWN);
+        }
+        if (parts.length == 3) {
+            state.setTimestamp(parseLong(parts[2]));
+        }
+        return state;
     }
 }

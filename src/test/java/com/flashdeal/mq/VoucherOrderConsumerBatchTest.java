@@ -2,6 +2,8 @@ package com.flashdeal.mq;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flashdeal.dto.BatchVoucherOrderResult;
+import com.flashdeal.dto.SeckillReservationState;
+import com.flashdeal.dto.SeckillReservationStatus;
 import com.flashdeal.dto.VoucherOrderMessage;
 import com.flashdeal.service.IMqMessageService;
 import com.flashdeal.service.IVoucherOrderService;
@@ -44,6 +46,9 @@ class VoucherOrderConsumerBatchTest {
         ), fixture.channel);
 
         verify(fixture.voucherOrderService).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.voucherOrderService, never()).hasExistingOrder(any(), any(), any());
+        verify(fixture.seckillReservationService).commit(30L, 20L, 10L);
+        verify(fixture.seckillReservationService).commit(30L, 21L, 11L);
         verify(fixture.channel).basicAck(100L, false);
         verify(fixture.channel).basicAck(101L, false);
     }
@@ -65,9 +70,12 @@ class VoucherOrderConsumerBatchTest {
     }
 
     @Test
-    void claimFailureShouldAckWithoutCreatingOrder() throws Exception {
+    void committedReservationClaimFailureShouldAckWithoutCreatingOrder() throws Exception {
         Fixture fixture = new Fixture();
         when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.COMMITTED, 10L, System.currentTimeMillis(), "10:COMMITTED:1"));
+        when(fixture.mqMessageService.markConsumed(1L)).thenReturn(true);
 
         fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
                 message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
@@ -75,6 +83,60 @@ class VoucherOrderConsumerBatchTest {
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
         verify(fixture.channel).basicAck(100L, false);
+        verify(fixture.channel, never()).basicNack(100L, false, true);
+    }
+
+    @Test
+    void processingReservationClaimFailureShouldRequeueWithoutAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.PROCESSING, 10L, System.currentTimeMillis(), "10:PROCESSING:1"));
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
+        ), fixture.channel);
+
+        verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.channel).basicNack(100L, false, true);
+        verify(fixture.channel, never()).basicAck(100L, false);
+    }
+
+    @Test
+    void missingReservationClaimFailureShouldRequeueWithoutAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.MISSING, null, null, null));
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
+        ), fixture.channel);
+
+        verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.channel).basicNack(100L, false, true);
+        verify(fixture.channel, never()).basicAck(100L, false);
+    }
+
+    @Test
+    void timedOutProcessingReservationShouldBeReclaimedAndProcessed() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false).thenReturn(true);
+        when(fixture.seckillReservationService.getProcessingTimeoutMillis()).thenReturn(1000L);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.PROCESSING, 10L,
+                        System.currentTimeMillis() - 2000L, "10:PROCESSING:1"));
+        BatchVoucherOrderResult result = new BatchVoucherOrderResult();
+        result.addSuccessOrderId(10L);
+        when(fixture.voucherOrderService.createClaimedVoucherOrdersBatch(anyList())).thenReturn(result);
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
+        ), fixture.channel);
+
+        verify(fixture.voucherOrderService).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.channel).basicAck(100L, false);
+        verify(fixture.channel, never()).basicNack(100L, false, true);
     }
 
     @Test
@@ -140,6 +202,15 @@ class VoucherOrderConsumerBatchTest {
         return new Message(objectMapper.writeValueAsBytes(orderMessage), properties);
     }
 
+    private static SeckillReservationState state(SeckillReservationStatus status, Long orderId, Long timestamp, String rawValue) {
+        SeckillReservationState state = new SeckillReservationState();
+        state.setStatus(status);
+        state.setOrderId(orderId);
+        state.setTimestamp(timestamp);
+        state.setRawValue(rawValue);
+        return state;
+    }
+
     private static class Fixture {
         private final VoucherOrderConsumer consumer = new VoucherOrderConsumer();
         private final IVoucherOrderService voucherOrderService = mock(IVoucherOrderService.class);
@@ -155,6 +226,7 @@ class VoucherOrderConsumerBatchTest {
             ReflectionTestUtils.setField(consumer, "seckillReservationService", seckillReservationService);
             ReflectionTestUtils.setField(consumer, "retryTimes", 2);
             when(seckillReservationService.claim(any(), any(), any())).thenReturn(true);
+            when(seckillReservationService.getProcessingTimeoutMillis()).thenReturn(600_000L);
         }
     }
 }

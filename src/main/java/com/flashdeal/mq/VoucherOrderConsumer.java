@@ -3,6 +3,8 @@ package com.flashdeal.mq;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flashdeal.dto.BatchVoucherOrderResult;
 import com.flashdeal.dto.OrderProcessStatus;
+import com.flashdeal.dto.SeckillReservationState;
+import com.flashdeal.dto.SeckillReservationStatus;
 import com.flashdeal.dto.VoucherOrderMessage;
 import com.flashdeal.service.IMqMessageService;
 import com.flashdeal.service.IVoucherOrderService;
@@ -66,24 +68,57 @@ public class VoucherOrderConsumer {
     private List<BatchMessageItem> prepareClaimedItems(List<BatchMessageItem> items, Channel channel) throws IOException {
         List<BatchMessageItem> claimedItems = new ArrayList<>();
         for (BatchMessageItem item : items) {
-            if (voucherOrderService.hasExistingOrder(item.getOrderId(), item.getUserId(), item.getVoucherId())) {
-                if (markConsumed(item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId())) {
-                    cleanupPendingSafely(item);
-                    channel.basicAck(item.getDeliveryTag(), false);
-                } else {
-                    channel.basicNack(item.getDeliveryTag(), false, false);
-                }
-                continue;
-            }
             if (seckillReservationService.claim(item.getVoucherId(), item.getUserId(), item.getOrderId())) {
                 claimedItems.add(item);
                 continue;
             }
-            log.warn("Skip stale or duplicate seckill message because reservation claim failed, messageId={}, orderId={}, userId={}, voucherId={}",
-                    item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId());
-            channel.basicAck(item.getDeliveryTag(), false);
+            if (handleClaimFailure(item, channel)) {
+                claimedItems.add(item);
+            }
         }
         return claimedItems;
+    }
+
+    private boolean handleClaimFailure(BatchMessageItem item, Channel channel) throws IOException {
+        SeckillReservationState state = seckillReservationService.getReservationState(
+                item.getVoucherId(), item.getUserId());
+        SeckillReservationStatus status = state.getStatus();
+        Long stateOrderId = state.getOrderId();
+        if (stateOrderId != null && !stateOrderId.equals(item.getOrderId())) {
+            log.warn("Nack seckill message because reservation belongs to another order, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, reservationOrderId={}, reservation={}",
+                    item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
+                    status, stateOrderId, state.getRawValue());
+            channel.basicNack(item.getDeliveryTag(), false, true);
+            return false;
+        }
+
+        if (status == SeckillReservationStatus.COMMITTED
+                || status == SeckillReservationStatus.CANCELED
+                || status == SeckillReservationStatus.EXPIRED) {
+            if (markConsumed(item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId())) {
+                cleanupPendingSafely(item);
+                log.info("Ack seckill message after reservation terminal state, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}",
+                        item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(), status);
+                channel.basicAck(item.getDeliveryTag(), false);
+            } else {
+                channel.basicNack(item.getDeliveryTag(), false, true);
+            }
+            return false;
+        }
+
+        long nowMillis = System.currentTimeMillis();
+        if (status == SeckillReservationStatus.PROCESSING
+                && state.isProcessingTimedOut(nowMillis, seckillReservationService.getProcessingTimeoutMillis())
+                && seckillReservationService.claim(item.getVoucherId(), item.getUserId(), item.getOrderId())) {
+            log.warn("Reclaimed timed-out PROCESSING reservation, messageId={}, orderId={}, userId={}, voucherId={}, reservation={}",
+                    item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(), state.getRawValue());
+            return true;
+        }
+
+        log.warn("Nack seckill message because reservation claim failed and state is not terminal, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, reservation={}, action=requeue",
+                item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(), status, state.getRawValue());
+        channel.basicNack(item.getDeliveryTag(), false, true);
+        return false;
     }
 
     private void processWithRetry(List<BatchMessageItem> items, Channel channel) throws IOException {
@@ -125,7 +160,7 @@ public class VoucherOrderConsumer {
             Long orderId = item.getOrderId();
             OrderProcessStatus status = statusMap.get(orderId);
             if (status == OrderProcessStatus.SUCCESS || status == OrderProcessStatus.IDEMPOTENT_SUCCESS) {
-                cleanupPendingSafely(item);
+                commitReservationSafely(item);
                 channel.basicAck(item.getDeliveryTag(), false);
             } else if (status == OrderProcessStatus.NON_RETRYABLE_FAILED) {
                 log.warn("Seckill order batch message non-retryable failure, messageId={}, orderId={}, reason={}",
@@ -170,6 +205,16 @@ public class VoucherOrderConsumer {
         } catch (Exception e) {
             log.error("Clean seckill pending failed after MySQL order confirmed, messageId={}, orderId={}",
                     item.getMessageId(), item.getOrderId(), e);
+        }
+    }
+
+    private void commitReservationSafely(BatchMessageItem item) {
+        try {
+            seckillReservationService.commit(item.getVoucherId(), item.getUserId(), item.getOrderId());
+        } catch (Exception e) {
+            log.error("Commit seckill reservation failed after MySQL order confirmed, messageId={}, orderId={}, userId={}, voucherId={}",
+                    item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(), e);
+            cleanupPendingSafely(item);
         }
     }
 
