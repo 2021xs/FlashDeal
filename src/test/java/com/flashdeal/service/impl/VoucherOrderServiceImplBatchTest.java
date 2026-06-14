@@ -28,13 +28,14 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class VoucherOrderServiceImplBatchTest {
 
     @Test
-    void duplicateInsideBatchShouldAckDuplicateAndInsertOnlyOne() {
+    void duplicateInsideBatchShouldBeIdempotentOnlyAfterPrimarySuccess() {
         Fixture fixture = new Fixture();
         givenTransactionExecutes(fixture);
         when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList())).thenReturn(Collections.emptyList());
@@ -57,17 +58,38 @@ class VoucherOrderServiceImplBatchTest {
     }
 
     @Test
-    void existingDatabaseOrderShouldBeAckedWithoutInsert() {
+    void duplicateInsideBatchShouldFollowPrimaryRetryableFailure() {
+        Fixture fixture = new Fixture();
+        doThrow(new RuntimeException("database unavailable"))
+                .when(fixture.transactionTemplate).executeWithoutResult(any());
+        when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList())).thenReturn(Collections.emptyList());
+
+        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Arrays.asList(
+                order(10L, 20L, 30L),
+                order(11L, 20L, 30L)
+        ));
+
+        Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(10L));
+        Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(11L));
+        Assertions.assertFalse(result.getIdempotentOrderIds().contains(11L));
+        Assertions.assertFalse(result.getAckOrderIds().contains(11L));
+    }
+
+    @Test
+    void existingDatabaseOrderShouldAckPrimaryAndDuplicateWithoutInsert() {
         Fixture fixture = new Fixture();
         when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList()))
                 .thenReturn(Collections.singletonList(order(null, 20L, 30L)));
 
-        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Collections.singletonList(
-                order(10L, 20L, 30L)
+        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Arrays.asList(
+                order(10L, 20L, 30L),
+                order(11L, 20L, 30L)
         ));
 
         Assertions.assertTrue(result.getAckOrderIds().contains(10L));
+        Assertions.assertTrue(result.getAckOrderIds().contains(11L));
         Assertions.assertTrue(result.getIdempotentOrderIds().contains(10L));
+        Assertions.assertTrue(result.getIdempotentOrderIds().contains(11L));
         verify(fixture.voucherOrderMapper, never()).insertBatch(anyList());
         verify(fixture.seckillVoucherMapper, never()).decrementStockBatch(any(), any(Integer.class));
     }
@@ -95,6 +117,31 @@ class VoucherOrderServiceImplBatchTest {
     }
 
     @Test
+    void batchFailureBelowFallbackLimitShouldFallbackAndClassifySuccessAndDuplicate() {
+        Fixture fixture = new Fixture();
+        givenTransactionExecutes(fixture);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerVoucher", 2);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerBatch", 2);
+        when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList())).thenReturn(Collections.emptyList());
+        when(fixture.seckillVoucherMapper.decrementStockBatch(30L, 2)).thenReturn(0);
+        doNothing().when(fixture.service)
+                .createVoucherOrder(argThat(order -> order != null && order.getId().equals(10L)));
+        doThrow(new DuplicateKeyException("duplicate"))
+                .when(fixture.service)
+                .createVoucherOrder(argThat(order -> order != null && order.getId().equals(11L)));
+
+        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Arrays.asList(
+                order(10L, 20L, 30L),
+                order(11L, 21L, 30L)
+        ));
+
+        Assertions.assertTrue(result.getSuccessOrderIds().contains(10L));
+        Assertions.assertTrue(result.getIdempotentOrderIds().contains(11L));
+        Assertions.assertFalse(result.getRetryableFailedOrderIds().contains(11L));
+        verify(fixture.service, times(2)).createVoucherOrder(any(VoucherOrder.class));
+    }
+
+    @Test
     void duplicateKeyAfterBatchStockDecrementShouldFallbackAfterTransactionException() {
         Fixture fixture = new Fixture();
         doAnswer(invocation -> {
@@ -118,6 +165,54 @@ class VoucherOrderServiceImplBatchTest {
     }
 
     @Test
+    void batchFailureExceedingPerVoucherFallbackLimitShouldMarkRemainingRetryable() {
+        Fixture fixture = new Fixture();
+        givenTransactionExecutes(fixture);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerVoucher", 1);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerBatch", 10);
+        when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList())).thenReturn(Collections.emptyList());
+        when(fixture.seckillVoucherMapper.decrementStockBatch(30L, 3)).thenReturn(0);
+        doNothing().when(fixture.service).createVoucherOrder(any(VoucherOrder.class));
+
+        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Arrays.asList(
+                order(10L, 20L, 30L),
+                order(11L, 21L, 30L),
+                order(12L, 22L, 30L)
+        ));
+
+        Assertions.assertTrue(result.getSuccessOrderIds().contains(10L));
+        Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(11L));
+        Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(12L));
+        Assertions.assertFalse(result.getAckOrderIds().contains(11L));
+        Assertions.assertEquals("BATCH_FALLBACK_LIMIT_EXCEEDED:BATCH_STOCK_NOT_ENOUGH",
+                result.getFailedReasons().get(11L));
+        verify(fixture.service, times(1)).createVoucherOrder(any(VoucherOrder.class));
+    }
+
+    @Test
+    void batchFailureExceedingBatchFallbackLimitShouldStopFallbackAcrossVoucherGroups() {
+        Fixture fixture = new Fixture();
+        givenTransactionExecutes(fixture);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerVoucher", 10);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerBatch", 1);
+        when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList())).thenReturn(Collections.emptyList());
+        when(fixture.seckillVoucherMapper.decrementStockBatch(30L, 1)).thenReturn(0);
+        when(fixture.seckillVoucherMapper.decrementStockBatch(31L, 1)).thenReturn(0);
+        doNothing().when(fixture.service).createVoucherOrder(any(VoucherOrder.class));
+
+        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Arrays.asList(
+                order(10L, 20L, 30L),
+                order(11L, 21L, 31L)
+        ));
+
+        Assertions.assertEquals(1, result.getSuccessOrderIds().size());
+        Assertions.assertEquals(1, result.getRetryableFailedOrderIds().size());
+        Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(10L)
+                || result.getRetryableFailedOrderIds().contains(11L));
+        verify(fixture.service, times(1)).createVoucherOrder(any(VoucherOrder.class));
+    }
+
+    @Test
     void batchTransactionRuntimeExceptionShouldReturnRetryableFailure() {
         Fixture fixture = new Fixture();
         doThrow(new RuntimeException("database unavailable"))
@@ -131,6 +226,50 @@ class VoucherOrderServiceImplBatchTest {
         Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(10L));
         Assertions.assertTrue(result.shouldRetry());
         Assertions.assertFalse(result.getNonRetryableFailedOrderIds().contains(10L));
+    }
+
+    @Test
+    void databaseExceptionShouldNotFallbackWholeGroupOneByOne() {
+        Fixture fixture = new Fixture();
+        doThrow(new RuntimeException("database unavailable"))
+                .when(fixture.transactionTemplate).executeWithoutResult(any());
+        when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList())).thenReturn(Collections.emptyList());
+
+        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Arrays.asList(
+                order(10L, 20L, 30L),
+                order(11L, 21L, 30L)
+        ));
+
+        Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(10L));
+        Assertions.assertTrue(result.getRetryableFailedOrderIds().contains(11L));
+        verify(fixture.service, never()).createVoucherOrder(any(VoucherOrder.class));
+    }
+
+    @Test
+    void duplicateKeyShouldRequeryExistingOrdersBeforeLimitedFallback() {
+        Fixture fixture = new Fixture();
+        givenTransactionExecutes(fixture);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerVoucher", 1);
+        ReflectionTestUtils.setField(fixture.service, "fallbackLimitPerBatch", 1);
+        when(fixture.voucherOrderMapper.selectExistingUserVoucherPairs(anyList()))
+                .thenReturn(Collections.emptyList())
+                .thenReturn(Collections.singletonList(order(null, 20L, 30L)));
+        when(fixture.seckillVoucherMapper.decrementStockBatch(30L, 3)).thenReturn(1);
+        when(fixture.voucherOrderMapper.insertBatch(anyList())).thenThrow(new DuplicateKeyException("duplicate"));
+        doNothing().when(fixture.service).createVoucherOrder(any(VoucherOrder.class));
+
+        BatchVoucherOrderResult result = fixture.service.createVoucherOrdersBatch(Arrays.asList(
+                order(10L, 20L, 30L),
+                order(11L, 21L, 30L),
+                order(12L, 22L, 30L)
+        ));
+
+        Assertions.assertTrue(result.getIdempotentOrderIds().contains(10L));
+        Assertions.assertEquals(1, result.getSuccessOrderIds().size());
+        Assertions.assertEquals(1, result.getRetryableFailedOrderIds().size());
+        Assertions.assertFalse(result.getRetryableFailedOrderIds().contains(10L));
+        verify(fixture.voucherOrderMapper, times(2)).selectExistingUserVoucherPairs(anyList());
+        verify(fixture.service, times(1)).createVoucherOrder(any(VoucherOrder.class));
     }
 
     @Test
@@ -238,6 +377,9 @@ class VoucherOrderServiceImplBatchTest {
             ReflectionTestUtils.setField(service, "transactionTemplate", transactionTemplate);
             ReflectionTestUtils.setField(service, "mqMessageService", mqMessageService);
             ReflectionTestUtils.setField(service, "outboxEventService", outboxEventService);
+            ReflectionTestUtils.setField(service, "batchFallbackEnabled", true);
+            ReflectionTestUtils.setField(service, "fallbackLimitPerVoucher", 20);
+            ReflectionTestUtils.setField(service, "fallbackLimitPerBatch", 50);
         }
     }
 }

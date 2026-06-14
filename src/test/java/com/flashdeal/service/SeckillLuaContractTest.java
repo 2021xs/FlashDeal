@@ -43,6 +43,8 @@ class SeckillLuaContractTest {
         assertTrue(lua.contains("orderId .. ':COMMITTED:' .. nowMillis"));
         assertTrue(lua.contains("redis.call('zrem', pendingKey, orderId)"));
         assertTrue(lua.contains("redis.call('del', pendingDetailKey)"));
+        assertTrue(lua.contains("return 1"));
+        assertTrue(lua.contains("return 0"));
     }
 
     private String resource(String name) throws Exception {

@@ -46,8 +46,8 @@ public class SeckillReservationService {
         return result != null && result == 1L;
     }
 
-    public void commit(Long voucherId, Long userId, Long orderId) {
-        stringRedisTemplate.execute(
+    public Long commit(Long voucherId, Long userId, Long orderId) {
+        return stringRedisTemplate.execute(
                 COMMIT_SCRIPT,
                 Collections.emptyList(),
                 voucherId.toString(),

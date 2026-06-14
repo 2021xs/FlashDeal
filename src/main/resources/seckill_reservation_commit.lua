@@ -15,8 +15,9 @@ local reservation = redis.call('get', reservationKey)
 local expectedPrefix = orderId .. ':'
 if (reservation and string.sub(reservation, 1, string.len(expectedPrefix)) == expectedPrefix) then
     redis.call('set', reservationKey, orderId .. ':COMMITTED:' .. nowMillis)
+    redis.call('zrem', pendingKey, orderId)
+    redis.call('del', pendingDetailKey)
+    return 1
 end
 
-redis.call('zrem', pendingKey, orderId)
-redis.call('del', pendingDetailKey)
-return 1
+return 0

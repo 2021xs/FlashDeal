@@ -9,6 +9,9 @@ public class RabbitConstants {
     public static final String SECKILL_ORDER_DLX = "flashdeal.seckill.order.dlx";
     public static final String SECKILL_ORDER_DLQ = "flashdeal.seckill.order.dlq";
     public static final String SECKILL_ORDER_DLK = "flashdeal.seckill.order.dead";
+    public static final String SECKILL_CLAIM_RETRY_EXCHANGE = "flashdeal.seckill.claim.retry.exchange";
+    public static final String SECKILL_CLAIM_RETRY_QUEUE = "flashdeal.seckill.claim.retry.queue";
+    public static final String SECKILL_CLAIM_RETRY_ROUTING_KEY = "flashdeal.seckill.claim.retry";
 
     public static final String SHOP_CACHE_INVALIDATE_EXCHANGE = "flashdeal.shop.cache.invalidate.exchange";
     public static final String SHOP_CACHE_TYPE = "SHOP";

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flashdeal.dto.BatchVoucherOrderResult;
+import com.flashdeal.dto.OrderProcessStatus;
 import com.flashdeal.dto.Result;
 import com.flashdeal.dto.SeckillOrderResultDTO;
 import com.flashdeal.dto.UserDTO;
@@ -40,6 +41,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -94,6 +96,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Value("${seckill.mq-message.initial-next-retry-delay-seconds:30}")
     private Long mqMessageInitialNextRetryDelaySeconds;
+
+    @Value("${seckill.batch.fallback-enabled:true}")
+    private boolean batchFallbackEnabled;
+
+    @Value("${seckill.batch.fallback-limit-per-voucher:20}")
+    private int fallbackLimitPerVoucher;
+
+    @Value("${seckill.batch.fallback-limit-per-batch:50}")
+    private int fallbackLimitPerBatch;
 
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
 
@@ -344,13 +355,16 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         Set<String> seenUserVoucherKeys = new HashSet<>();
         List<VoucherOrder> deduplicatedOrders = new ArrayList<>();
+        Map<String, VoucherOrder> primaryOrdersByUserVoucherKey = new HashMap<>();
+        Map<String, List<VoucherOrder>> duplicateOrdersByUserVoucherKey = new HashMap<>();
         for (VoucherOrder order : voucherOrders) {
             String key = buildUserVoucherKey(order.getUserId(), order.getVoucherId());
             if (seenUserVoucherKeys.add(key)) {
                 deduplicatedOrders.add(order);
+                primaryOrdersByUserVoucherKey.put(key, order);
             } else {
-                result.addIdempotentOrderId(order.getId());
-                log.warn("Duplicate seckill order message ignored inside batch, orderId={}, userId={}, voucherId={}",
+                duplicateOrdersByUserVoucherKey.computeIfAbsent(key, ignored -> new ArrayList<>()).add(order);
+                log.warn("Duplicate seckill order message deferred inside batch until primary result is known, orderId={}, userId={}, voucherId={}",
                         order.getId(), order.getUserId(), order.getVoucherId());
             }
         }
@@ -384,21 +398,83 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
 
         if (ordersToCreate.isEmpty()) {
+            propagateDuplicateOrderResults(primaryOrdersByUserVoucherKey, duplicateOrdersByUserVoucherKey, result);
+            markConfirmedDuplicateMessagesConsumed(duplicateOrdersByUserVoucherKey, result, messageIdsByOrderId);
             return result;
         }
 
         Map<Long, List<VoucherOrder>> ordersByVoucherId = ordersToCreate.stream()
                 .collect(Collectors.groupingBy(VoucherOrder::getVoucherId));
+        FallbackBudget fallbackBudget = new FallbackBudget();
         for (Map.Entry<Long, List<VoucherOrder>> entry : ordersByVoucherId.entrySet()) {
-            createVoucherOrderGroup(entry.getKey(), entry.getValue(), result, messageIdsByOrderId);
+            createVoucherOrderGroup(entry.getKey(), entry.getValue(), result, messageIdsByOrderId, fallbackBudget);
         }
+        propagateDuplicateOrderResults(primaryOrdersByUserVoucherKey, duplicateOrdersByUserVoucherKey, result);
+        markConfirmedDuplicateMessagesConsumed(duplicateOrdersByUserVoucherKey, result, messageIdsByOrderId);
         return result;
+    }
+
+    private void propagateDuplicateOrderResults(Map<String, VoucherOrder> primaryOrdersByUserVoucherKey,
+                                                Map<String, List<VoucherOrder>> duplicateOrdersByUserVoucherKey,
+                                                BatchVoucherOrderResult result) {
+        if (duplicateOrdersByUserVoucherKey.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, List<VoucherOrder>> entry : duplicateOrdersByUserVoucherKey.entrySet()) {
+            VoucherOrder primaryOrder = primaryOrdersByUserVoucherKey.get(entry.getKey());
+            OrderProcessStatus primaryStatus = primaryOrder == null ? null : result.getStatus(primaryOrder.getId());
+            for (VoucherOrder duplicateOrder : entry.getValue()) {
+                propagateDuplicateOrderResult(primaryOrder, duplicateOrder, primaryStatus, result);
+            }
+        }
+    }
+
+    private void propagateDuplicateOrderResult(VoucherOrder primaryOrder,
+                                               VoucherOrder duplicateOrder,
+                                               OrderProcessStatus primaryStatus,
+                                               BatchVoucherOrderResult result) {
+        Long duplicateOrderId = duplicateOrder.getId();
+        if (primaryStatus == OrderProcessStatus.SUCCESS
+                || primaryStatus == OrderProcessStatus.IDEMPOTENT_SUCCESS) {
+            result.addIdempotentOrderId(duplicateOrderId);
+            log.warn("Duplicate seckill order message marked idempotent after primary order confirmed, primaryOrderId={}, duplicateOrderId={}, userId={}, voucherId={}, primaryStatus={}",
+                    primaryOrder == null ? null : primaryOrder.getId(), duplicateOrderId,
+                    duplicateOrder.getUserId(), duplicateOrder.getVoucherId(), primaryStatus);
+            return;
+        }
+        String reason = "PRIMARY_ORDER_" + (primaryStatus == null ? "UNKNOWN" : primaryStatus.name());
+        if (primaryStatus == OrderProcessStatus.NON_RETRYABLE_FAILED) {
+            result.addNonRetryableFailedOrderId(duplicateOrderId, reason);
+        } else {
+            result.addRetryableFailedOrderId(duplicateOrderId, reason);
+        }
+        log.warn("Duplicate seckill order message follows primary failure, primaryOrderId={}, duplicateOrderId={}, userId={}, voucherId={}, primaryStatus={}, action={}",
+                primaryOrder == null ? null : primaryOrder.getId(), duplicateOrderId,
+                duplicateOrder.getUserId(), duplicateOrder.getVoucherId(), primaryStatus,
+                primaryStatus == OrderProcessStatus.NON_RETRYABLE_FAILED ? "nonRetryableFailed" : "retryableFailed");
+    }
+
+    private void markConfirmedDuplicateMessagesConsumed(Map<String, List<VoucherOrder>> duplicateOrdersByUserVoucherKey,
+                                                        BatchVoucherOrderResult result,
+                                                        Map<Long, Long> messageIdsByOrderId) {
+        if (duplicateOrdersByUserVoucherKey.isEmpty() || messageIdsByOrderId.isEmpty()) {
+            return;
+        }
+        List<VoucherOrder> confirmedDuplicates = duplicateOrdersByUserVoucherKey.values().stream()
+                .flatMap(List::stream)
+                .filter(order -> result.getStatus(order.getId()) == OrderProcessStatus.IDEMPOTENT_SUCCESS)
+                .collect(Collectors.toList());
+        if (!confirmedDuplicates.isEmpty()) {
+            transactionTemplate.executeWithoutResult(
+                    status -> markMessagesConsumedInTransaction(confirmedDuplicates, messageIdsByOrderId));
+        }
     }
 
     private void createVoucherOrderGroup(Long voucherId,
                                          List<VoucherOrder> orders,
                                          BatchVoucherOrderResult result,
-                                         Map<Long, Long> messageIdsByOrderId) {
+                                         Map<Long, Long> messageIdsByOrderId,
+                                         FallbackBudget fallbackBudget) {
         try {
             transactionTemplate.executeWithoutResult(
                     status -> createVoucherOrderGroupInTransaction(voucherId, orders, messageIdsByOrderId));
@@ -406,13 +482,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 result.addSuccessOrderId(order.getId());
             }
         } catch (BatchStockNotEnoughException e) {
-            log.warn("Batch decrement stock not enough, fallback to single order processing, voucherId={}, size={}",
-                    voucherId, orders.size());
-            fallbackCreateOrdersOneByOne(orders, result, messageIdsByOrderId);
+            fallbackCreateOrdersOneByOne(voucherId, orders, result, messageIdsByOrderId, fallbackBudget,
+                    "BATCH_STOCK_NOT_ENOUGH");
         } catch (DuplicateKeyException e) {
-            log.warn("Batch insert seckill orders hit duplicate key, fallback to single order processing, voucherId={}, size={}",
-                    voucherId, orders.size(), e);
-            fallbackCreateOrdersOneByOne(orders, result, messageIdsByOrderId);
+            handleDuplicateKeyBatchFailure(voucherId, orders, result, messageIdsByOrderId, fallbackBudget, e);
         } catch (Exception e) {
             String reason = summarizeException(e);
             for (VoucherOrder order : orders) {
@@ -444,10 +517,82 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         markMessagesConsumedInTransaction(ordersToCreate, messageIdsByOrderId);
     }
 
-    private void fallbackCreateOrdersOneByOne(List<VoucherOrder> ordersToCreate,
+    private void handleDuplicateKeyBatchFailure(Long voucherId,
+                                                List<VoucherOrder> orders,
+                                                BatchVoucherOrderResult result,
+                                                Map<Long, Long> messageIdsByOrderId,
+                                                FallbackBudget fallbackBudget,
+                                                DuplicateKeyException cause) {
+        List<VoucherOrder> unresolvedOrders = new ArrayList<>(orders);
+        try {
+            List<VoucherOrder> existingOrders = baseMapper.selectExistingUserVoucherPairs(orders);
+            Set<String> existingUserVoucherKeys = existingOrders.stream()
+                    .map(order -> buildUserVoucherKey(order.getUserId(), order.getVoucherId()))
+                    .collect(Collectors.toSet());
+            List<VoucherOrder> confirmedExistingOrders = unresolvedOrders.stream()
+                    .filter(order -> existingUserVoucherKeys.contains(buildUserVoucherKey(order.getUserId(), order.getVoucherId())))
+                    .collect(Collectors.toList());
+            if (!confirmedExistingOrders.isEmpty()) {
+                transactionTemplate.executeWithoutResult(
+                        status -> markMessagesConsumedInTransaction(confirmedExistingOrders, messageIdsByOrderId));
+                for (VoucherOrder order : confirmedExistingOrders) {
+                    result.addIdempotentOrderId(order.getId());
+                    log.warn("Batch duplicate key confirmed existing order by requery, orderId={}, userId={}, voucherId={}, action=idempotentSuccess",
+                            order.getId(), order.getUserId(), order.getVoucherId());
+                }
+                unresolvedOrders = unresolvedOrders.stream()
+                        .filter(order -> !existingUserVoucherKeys.contains(buildUserVoucherKey(order.getUserId(), order.getVoucherId())))
+                        .collect(Collectors.toList());
+            }
+            log.warn("Batch insert duplicate key handled by requery before limited fallback, voucherId={}, batchSize={}, confirmedExistingCount={}, unresolvedCount={}, fallbackEnabled={}, fallbackLimitPerVoucher={}, fallbackLimitPerBatch={}, failureType={}, action=requery_then_limited_fallback",
+                    voucherId, orders.size(), confirmedExistingOrders.size(), unresolvedOrders.size(),
+                    batchFallbackEnabled, normalizedFallbackLimitPerVoucher(), normalizedFallbackLimitPerBatch(),
+                    "DUPLICATE_KEY");
+        } catch (Exception e) {
+            log.error("Batch duplicate key existing-order requery failed before limited fallback, voucherId={}, batchSize={}, fallbackEnabled={}, fallbackLimitPerVoucher={}, fallbackLimitPerBatch={}, failureType={}, action=limited_fallback_after_requery_failed",
+                    voucherId, orders.size(), batchFallbackEnabled, normalizedFallbackLimitPerVoucher(),
+                    normalizedFallbackLimitPerBatch(), "DUPLICATE_KEY_REQUERY_FAILED", e);
+            unresolvedOrders = new ArrayList<>(orders);
+        }
+        if (!unresolvedOrders.isEmpty()) {
+            fallbackCreateOrdersOneByOne(voucherId, unresolvedOrders, result, messageIdsByOrderId, fallbackBudget,
+                    "DUPLICATE_KEY", cause);
+        }
+    }
+
+    private void fallbackCreateOrdersOneByOne(Long voucherId,
+                                               List<VoucherOrder> ordersToCreate,
                                                BatchVoucherOrderResult result,
-                                               Map<Long, Long> messageIdsByOrderId) {
-        for (VoucherOrder order : ordersToCreate) {
+                                               Map<Long, Long> messageIdsByOrderId,
+                                               FallbackBudget fallbackBudget,
+                                               String failureType) {
+        fallbackCreateOrdersOneByOne(voucherId, ordersToCreate, result, messageIdsByOrderId, fallbackBudget,
+                failureType, null);
+    }
+
+    private void fallbackCreateOrdersOneByOne(Long voucherId,
+                                               List<VoucherOrder> ordersToCreate,
+                                               BatchVoucherOrderResult result,
+                                               Map<Long, Long> messageIdsByOrderId,
+                                               FallbackBudget fallbackBudget,
+                                               String failureType,
+                                               Exception cause) {
+        int allowedFallbackCount = calculateAllowedFallbackCount(fallbackBudget);
+        int actualFallbackCount = Math.min(ordersToCreate.size(), allowedFallbackCount);
+        int skippedFallbackCount = Math.max(0, ordersToCreate.size() - actualFallbackCount);
+        if (cause == null) {
+            log.warn("Batch create seckill orders entering limited fallback, voucherId={}, batchSize={}, fallbackEnabled={}, fallbackLimitPerVoucher={}, fallbackLimitPerBatch={}, actualFallbackCount={}, skippedFallbackCount={}, failureType={}, action=limited_single_fallback",
+                    voucherId, ordersToCreate.size(), batchFallbackEnabled, normalizedFallbackLimitPerVoucher(),
+                    normalizedFallbackLimitPerBatch(), actualFallbackCount, skippedFallbackCount, failureType);
+        } else {
+            log.warn("Batch create seckill orders entering limited fallback, voucherId={}, batchSize={}, fallbackEnabled={}, fallbackLimitPerVoucher={}, fallbackLimitPerBatch={}, actualFallbackCount={}, skippedFallbackCount={}, failureType={}, action=limited_single_fallback",
+                    voucherId, ordersToCreate.size(), batchFallbackEnabled, normalizedFallbackLimitPerVoucher(),
+                    normalizedFallbackLimitPerBatch(), actualFallbackCount, skippedFallbackCount, failureType, cause);
+        }
+
+        for (int i = 0; i < actualFallbackCount; i++) {
+            VoucherOrder order = ordersToCreate.get(i);
+            fallbackBudget.used++;
             try {
                 transactionTemplate.executeWithoutResult(status -> {
                     createVoucherOrder(order);
@@ -472,6 +617,33 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 }
             }
         }
+        if (skippedFallbackCount > 0) {
+            String reason = "BATCH_FALLBACK_LIMIT_EXCEEDED:" + failureType;
+            for (int i = actualFallbackCount; i < ordersToCreate.size(); i++) {
+                VoucherOrder order = ordersToCreate.get(i);
+                result.addRetryableFailedOrderId(order.getId(), reason);
+            }
+            log.warn("Batch create seckill orders skipped single fallback after limit reached, voucherId={}, batchSize={}, fallbackEnabled={}, fallbackLimitPerVoucher={}, fallbackLimitPerBatch={}, actualFallbackCount={}, skippedFallbackCount={}, failureType={}, action=mark_retryable_failed",
+                    voucherId, ordersToCreate.size(), batchFallbackEnabled, normalizedFallbackLimitPerVoucher(),
+                    normalizedFallbackLimitPerBatch(), actualFallbackCount, skippedFallbackCount, failureType);
+        }
+    }
+
+    private int calculateAllowedFallbackCount(FallbackBudget fallbackBudget) {
+        if (!batchFallbackEnabled) {
+            return 0;
+        }
+        int perVoucherLimit = normalizedFallbackLimitPerVoucher();
+        int batchRemaining = Math.max(0, normalizedFallbackLimitPerBatch() - fallbackBudget.used);
+        return Math.min(perVoucherLimit, batchRemaining);
+    }
+
+    private int normalizedFallbackLimitPerVoucher() {
+        return Math.max(0, fallbackLimitPerVoucher);
+    }
+
+    private int normalizedFallbackLimitPerBatch() {
+        return Math.max(0, fallbackLimitPerBatch);
     }
 
     private void markMessagesConsumedInTransaction(List<VoucherOrder> orders,
@@ -506,6 +678,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         private BatchStockNotEnoughException(String message) {
             super(message);
         }
+    }
+
+    private static class FallbackBudget {
+        private int used;
     }
 
     private String buildUserVoucherKey(Long userId, Long voucherId) {

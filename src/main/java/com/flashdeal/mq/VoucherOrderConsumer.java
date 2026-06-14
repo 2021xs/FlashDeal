@@ -12,7 +12,10 @@ import com.flashdeal.service.SeckillReservationService;
 import com.rabbitmq.client.Channel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageBuilder;
+import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -23,11 +26,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_EXCHANGE;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_ROUTING_KEY;
 import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_QUEUE;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_DLK;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_DLX;
 
 @Slf4j
 @Component
 public class VoucherOrderConsumer {
+
+    private static final String CLAIM_RETRY_COUNT_HEADER = "x-seckill-claim-retry-count";
+    private static final String CLAIM_LAST_STATUS_HEADER = "x-seckill-claim-last-status";
+    private static final String CLAIM_LAST_REASON_HEADER = "x-seckill-claim-last-reason";
+    private static final String CLAIM_LAST_TIME_HEADER = "x-seckill-claim-last-time";
 
     @Resource
     private IVoucherOrderService voucherOrderService;
@@ -41,8 +53,17 @@ public class VoucherOrderConsumer {
     @Resource
     private SeckillReservationService seckillReservationService;
 
+    @Resource
+    private RabbitTemplate rabbitTemplate;
+
     @Value("${seckill.order.batch-consume.retry-times:2}")
     private int retryTimes;
+
+    @Value("${seckill.reservation.claim-retry.enabled:true}")
+    private boolean claimRetryEnabled;
+
+    @Value("${seckill.reservation.claim-retry.max-attempts:5}")
+    private int claimRetryMaxAttempts;
 
     @RabbitListener(
             queues = SECKILL_ORDER_QUEUE,
@@ -88,7 +109,7 @@ public class VoucherOrderConsumer {
             log.warn("Nack seckill message because reservation belongs to another order, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, reservationOrderId={}, reservation={}",
                     item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
                     status, stateOrderId, state.getRawValue());
-            channel.basicNack(item.getDeliveryTag(), false, true);
+            sendToClaimFailureOutletOrFallback(item, channel, state, "RESERVATION_BELONGS_TO_ANOTHER_ORDER");
             return false;
         }
 
@@ -115,10 +136,114 @@ public class VoucherOrderConsumer {
             return true;
         }
 
-        log.warn("Nack seckill message because reservation claim failed and state is not terminal, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, reservation={}, action=requeue",
-                item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(), status, state.getRawValue());
-        channel.basicNack(item.getDeliveryTag(), false, true);
+        String reason = buildClaimFailureRequeueReason(status);
+        retryClaimLaterOrSendToFailureOutlet(item, channel, state, reason);
         return false;
+    }
+
+    private void retryClaimLaterOrSendToFailureOutlet(BatchMessageItem item,
+                                                      Channel channel,
+                                                      SeckillReservationState state,
+                                                      String reason) throws IOException {
+        int retryCount = getClaimRetryCount(item.getMessage());
+        int maxAttempts = Math.max(0, claimRetryMaxAttempts);
+        if (claimRetryEnabled && retryCount < maxAttempts) {
+            retryClaimLater(item, channel, state, reason, retryCount, maxAttempts);
+            return;
+        }
+        sendToClaimFailureOutletOrFallback(item, channel, state, reason);
+    }
+
+    private void retryClaimLater(BatchMessageItem item,
+                                 Channel channel,
+                                 SeckillReservationState state,
+                                 String reason,
+                                 int retryCount,
+                                 int maxAttempts) throws IOException {
+        int nextRetryCount = retryCount + 1;
+        try {
+            rabbitTemplate.convertAndSend(
+                    SECKILL_CLAIM_RETRY_EXCHANGE,
+                    SECKILL_CLAIM_RETRY_ROUTING_KEY,
+                    buildClaimTransferMessage(item, state, reason, nextRetryCount));
+            log.warn("Send seckill message to claim retry queue, reason={}, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, retryCount={}, maxAttempts={}, action=retry",
+                    reason, item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
+                    state.getStatus(), nextRetryCount, maxAttempts);
+            channel.basicAck(item.getDeliveryTag(), false);
+        } catch (Exception e) {
+            log.error("Send seckill claim retry message failed, fallback requeue, reason={}, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, retryCount={}, maxAttempts={}, action=fallback_requeue",
+                    reason, item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
+                    state.getStatus(), retryCount, maxAttempts, e);
+            channel.basicNack(item.getDeliveryTag(), false, true);
+        }
+    }
+
+    private void sendToClaimFailureOutletOrFallback(BatchMessageItem item,
+                                                    Channel channel,
+                                                    SeckillReservationState state,
+                                                    String reason) throws IOException {
+        int retryCount = getClaimRetryCount(item.getMessage());
+        int maxAttempts = Math.max(0, claimRetryMaxAttempts);
+        try {
+            rabbitTemplate.convertAndSend(
+                    SECKILL_ORDER_DLX,
+                    SECKILL_ORDER_DLK,
+                    buildClaimTransferMessage(item, state, reason, retryCount));
+            log.error("Send seckill message to claim failure outlet, reason={}, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, retryCount={}, maxAttempts={}, action=send_to_dlq",
+                    reason, item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
+                    state.getStatus(), retryCount, maxAttempts);
+            channel.basicAck(item.getDeliveryTag(), false);
+        } catch (Exception e) {
+            log.error("Send seckill claim failure outlet message failed, fallback requeue, reason={}, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, retryCount={}, maxAttempts={}, action=fallback_requeue",
+                    reason, item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
+                    state.getStatus(), retryCount, maxAttempts, e);
+            channel.basicNack(item.getDeliveryTag(), false, true);
+        }
+    }
+
+    private Message buildClaimTransferMessage(BatchMessageItem item,
+                                              SeckillReservationState state,
+                                              String reason,
+                                              int retryCount) {
+        return MessageBuilder.withBody(item.getMessage().getBody())
+                .copyProperties(item.getMessage().getMessageProperties())
+                .setHeader(CLAIM_RETRY_COUNT_HEADER, retryCount)
+                .setHeader(CLAIM_LAST_STATUS_HEADER, state.getStatus() == null ? null : state.getStatus().name())
+                .setHeader(CLAIM_LAST_REASON_HEADER, reason)
+                .setHeader(CLAIM_LAST_TIME_HEADER, System.currentTimeMillis())
+                .setDeliveryMode(MessageDeliveryMode.PERSISTENT)
+                .build();
+    }
+
+    private int getClaimRetryCount(Message message) {
+        Object value = message.getMessageProperties().getHeaders().get(CLAIM_RETRY_COUNT_HEADER);
+        if (value instanceof Number) {
+            return Math.max(0, ((Number) value).intValue());
+        }
+        if (value != null) {
+            try {
+                return Math.max(0, Integer.parseInt(value.toString()));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid seckill claim retry header, value={}", value);
+            }
+        }
+        return 0;
+    }
+
+    private String buildClaimFailureRequeueReason(SeckillReservationStatus status) {
+        if (status == SeckillReservationStatus.PROCESSING) {
+            return "PROCESSING_NOT_TIMEOUT_OR_RECLAIM_RACE";
+        }
+        if (status == SeckillReservationStatus.MISSING) {
+            return "MISSING_RESERVATION";
+        }
+        if (status == SeckillReservationStatus.UNKNOWN) {
+            return "UNKNOWN_RESERVATION_STATUS";
+        }
+        if (status == SeckillReservationStatus.PENDING) {
+            return "PENDING_CLAIM_RACE";
+        }
+        return "NON_TERMINAL_RESERVATION";
     }
 
     private void processWithRetry(List<BatchMessageItem> items, Channel channel) throws IOException {
@@ -210,7 +335,15 @@ public class VoucherOrderConsumer {
 
     private void commitReservationSafely(BatchMessageItem item) {
         try {
-            seckillReservationService.commit(item.getVoucherId(), item.getUserId(), item.getOrderId());
+            Long result = seckillReservationService.commit(item.getVoucherId(), item.getUserId(), item.getOrderId());
+            if (result != null && result == 1L) {
+                log.debug("Commit seckill reservation after MySQL order confirmed, messageId={}, orderId={}, userId={}, voucherId={}, action=commitReservation",
+                        item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId());
+            } else {
+                log.warn("Commit seckill reservation skipped because reservation state did not match confirmed order, messageId={}, orderId={}, userId={}, voucherId={}, reservationKey=seckill:reservation:{}:{}, commitResult={}, action=ackOrderButExposeReservationMismatch",
+                        item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
+                        item.getVoucherId(), item.getUserId(), result);
+            }
         } catch (Exception e) {
             log.error("Commit seckill reservation failed after MySQL order confirmed, messageId={}, orderId={}, userId={}, voucherId={}",
                     item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(), e);
@@ -237,6 +370,10 @@ public class VoucherOrderConsumer {
 
         private VoucherOrderMessage getOrderMessage() {
             return orderMessage;
+        }
+
+        private Message getMessage() {
+            return message;
         }
 
         private Long getMessageId() {

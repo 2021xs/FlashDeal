@@ -39,6 +39,9 @@ import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_DLX;
 import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_EXCHANGE;
 import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_QUEUE;
 import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_ROUTING_KEY;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_EXCHANGE;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_QUEUE;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_ROUTING_KEY;
 import static com.flashdeal.utils.RabbitConstants.SHOP_CACHE_INVALIDATE_EXCHANGE;
 
 @Configuration
@@ -70,6 +73,9 @@ public class RabbitMqConfig {
 
     @Value("${seckill.order.batch-consume.max-concurrency:1}")
     private int seckillOrderBatchMaxConcurrency;
+
+    @Value("${seckill.reservation.claim-retry.delay-millis:3000}")
+    private long seckillClaimRetryDelayMillis;
 
     @Bean
     public DirectExchange seckillOrderExchange() {
@@ -108,6 +114,29 @@ public class RabbitMqConfig {
         return BindingBuilder.bind(seckillOrderDeadLetterQueue)
                 .to(seckillOrderDeadLetterExchange)
                 .with(SECKILL_ORDER_DLK);
+    }
+
+    @Bean
+    public DirectExchange seckillClaimRetryExchange() {
+        return new DirectExchange(SECKILL_CLAIM_RETRY_EXCHANGE, true, false);
+    }
+
+    @Bean
+    public Queue seckillClaimRetryQueue() {
+        Map<String, Object> args = new HashMap<>();
+        args.put("x-message-ttl", Math.max(1L, seckillClaimRetryDelayMillis));
+        args.put("x-dead-letter-exchange", SECKILL_ORDER_EXCHANGE);
+        args.put("x-dead-letter-routing-key", SECKILL_ORDER_ROUTING_KEY);
+        return new Queue(SECKILL_CLAIM_RETRY_QUEUE, true, false, false, args);
+    }
+
+    @Bean
+    public Binding seckillClaimRetryBinding(
+            Queue seckillClaimRetryQueue,
+            DirectExchange seckillClaimRetryExchange) {
+        return BindingBuilder.bind(seckillClaimRetryQueue)
+                .to(seckillClaimRetryExchange)
+                .with(SECKILL_CLAIM_RETRY_ROUTING_KEY);
     }
 
     @Bean

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Arrays;
@@ -22,11 +23,18 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_EXCHANGE;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_ROUTING_KEY;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_DLK;
+import static com.flashdeal.utils.RabbitConstants.SECKILL_ORDER_DLX;
 
 class VoucherOrderConsumerBatchTest {
 
@@ -67,6 +75,28 @@ class VoucherOrderConsumerBatchTest {
         verify(fixture.voucherOrderService).createClaimedVoucherOrdersBatch(anyList());
         verify(fixture.channel).basicNack(100L, false, false);
         verify(fixture.channel, never()).basicAck(100L, false);
+        verify(fixture.seckillReservationService, never()).commit(any(), any(), any());
+    }
+
+    @Test
+    void duplicateShouldNotCommitWhenServiceReturnsRetryableFailure() throws Exception {
+        Fixture fixture = new Fixture();
+        ReflectionTestUtils.setField(fixture.consumer, "retryTimes", 0);
+        BatchVoucherOrderResult result = new BatchVoucherOrderResult();
+        result.addRetryableFailedOrderId(10L, "database timeout");
+        result.addRetryableFailedOrderId(11L, "PRIMARY_ORDER_RETRYABLE_FAILED");
+        when(fixture.voucherOrderService.createClaimedVoucherOrdersBatch(anyList())).thenReturn(result);
+
+        fixture.consumer.handleSeckillOrderBatch(Arrays.asList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L),
+                message(fixture.objectMapper, 2L, 11L, 20L, 30L, 101L)
+        ), fixture.channel);
+
+        verify(fixture.seckillReservationService, never()).commit(any(), any(), any());
+        verify(fixture.channel).basicNack(100L, false, false);
+        verify(fixture.channel).basicNack(101L, false, false);
+        verify(fixture.channel, never()).basicAck(100L, false);
+        verify(fixture.channel, never()).basicAck(101L, false);
     }
 
     @Test
@@ -87,7 +117,7 @@ class VoucherOrderConsumerBatchTest {
     }
 
     @Test
-    void processingReservationClaimFailureShouldRequeueWithoutAck() throws Exception {
+    void processingReservationClaimFailureShouldPublishRetryAndAck() throws Exception {
         Fixture fixture = new Fixture();
         when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
         when(fixture.seckillReservationService.getReservationState(30L, 20L))
@@ -98,22 +128,115 @@ class VoucherOrderConsumerBatchTest {
         ), fixture.channel);
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
-        verify(fixture.channel).basicNack(100L, false, true);
-        verify(fixture.channel, never()).basicAck(100L, false);
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+        verify(fixture.channel).basicAck(100L, false);
+        verify(fixture.channel, never()).basicNack(100L, false, true);
     }
 
     @Test
-    void missingReservationClaimFailureShouldRequeueWithoutAck() throws Exception {
+    void timedOutProcessingReclaimFailureShouldPublishRetryAndAck() throws Exception {
         Fixture fixture = new Fixture();
-        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false).thenReturn(false);
+        when(fixture.seckillReservationService.getProcessingTimeoutMillis()).thenReturn(1000L);
         when(fixture.seckillReservationService.getReservationState(30L, 20L))
-                .thenReturn(state(SeckillReservationStatus.MISSING, null, null, null));
+                .thenReturn(state(SeckillReservationStatus.PROCESSING, 10L,
+                        System.currentTimeMillis() - 2000L, "10:PROCESSING:1"));
 
         fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
                 message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
         ), fixture.channel);
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+        verify(fixture.channel).basicAck(100L, false);
+        verify(fixture.channel, never()).basicNack(100L, false, true);
+    }
+
+    @Test
+    void missingReservationClaimFailureShouldPublishRetryWithIncrementedHeaderAndAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.MISSING, null, null, null));
+        Message source = message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L);
+        source.getMessageProperties().setHeader("x-seckill-claim-retry-count", 2);
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(source), fixture.channel);
+
+        verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), captor.capture());
+        Assertions.assertEquals(3, captor.getValue().getMessageProperties().getHeaders().get("x-seckill-claim-retry-count"));
+        Assertions.assertEquals("MISSING", captor.getValue().getMessageProperties().getHeaders().get("x-seckill-claim-last-status"));
+        verify(fixture.channel).basicAck(100L, false);
+        verify(fixture.channel, never()).basicNack(100L, false, true);
+    }
+
+    @Test
+    void unknownReservationAfterMaxRetryShouldPublishDlqAndAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.UNKNOWN, 10L, null, "10:BAD:1"));
+        Message source = message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L);
+        source.getMessageProperties().setHeader("x-seckill-claim-retry-count", 5);
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(source), fixture.channel);
+
+        verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_ORDER_DLX), eq(SECKILL_ORDER_DLK), any(Message.class));
+        verify(fixture.rabbitTemplate, never()).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+        verify(fixture.channel).basicAck(100L, false);
+        verify(fixture.channel, never()).basicNack(100L, false, true);
+    }
+
+    @Test
+    void canceledReservationClaimFailureShouldAckWithoutRetryOrDlq() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.CANCELED, 10L, System.currentTimeMillis(), "10:CANCELED:1"));
+        when(fixture.mqMessageService.markConsumed(1L)).thenReturn(true);
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
+        ), fixture.channel);
+
+        verify(fixture.channel).basicAck(100L, false);
+        verify(fixture.rabbitTemplate, never()).convertAndSend(any(String.class), any(String.class), any(Message.class));
+        verify(fixture.channel, never()).basicNack(100L, false, true);
+    }
+
+    @Test
+    void retryPublishFailureShouldFallbackRequeueWithoutAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.MISSING, null, null, null));
+        doThrow(new RuntimeException("retry publish failed"))
+                .when(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
+        ), fixture.channel);
+
+        verify(fixture.channel).basicNack(100L, false, true);
+        verify(fixture.channel, never()).basicAck(100L, false);
+    }
+
+    @Test
+    void dlqPublishFailureShouldFallbackRequeueWithoutAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.UNKNOWN, 10L, null, "10:BAD:1"));
+        Message source = message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L);
+        source.getMessageProperties().setHeader("x-seckill-claim-retry-count", 5);
+        doThrow(new RuntimeException("dlq publish failed"))
+                .when(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_ORDER_DLX), eq(SECKILL_ORDER_DLK), any(Message.class));
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(source), fixture.channel);
+
         verify(fixture.channel).basicNack(100L, false, true);
         verify(fixture.channel, never()).basicAck(100L, false);
     }
@@ -216,6 +339,7 @@ class VoucherOrderConsumerBatchTest {
         private final IVoucherOrderService voucherOrderService = mock(IVoucherOrderService.class);
         private final IMqMessageService mqMessageService = mock(IMqMessageService.class);
         private final SeckillReservationService seckillReservationService = mock(SeckillReservationService.class);
+        private final RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
         private final ObjectMapper objectMapper = new ObjectMapper();
         private final Channel channel = mock(Channel.class);
 
@@ -224,9 +348,13 @@ class VoucherOrderConsumerBatchTest {
             ReflectionTestUtils.setField(consumer, "mqMessageService", mqMessageService);
             ReflectionTestUtils.setField(consumer, "objectMapper", objectMapper);
             ReflectionTestUtils.setField(consumer, "seckillReservationService", seckillReservationService);
+            ReflectionTestUtils.setField(consumer, "rabbitTemplate", rabbitTemplate);
             ReflectionTestUtils.setField(consumer, "retryTimes", 2);
+            ReflectionTestUtils.setField(consumer, "claimRetryEnabled", true);
+            ReflectionTestUtils.setField(consumer, "claimRetryMaxAttempts", 5);
             when(seckillReservationService.claim(any(), any(), any())).thenReturn(true);
             when(seckillReservationService.getProcessingTimeoutMillis()).thenReturn(600_000L);
+            when(seckillReservationService.commit(any(), any(), any())).thenReturn(1L);
         }
     }
 }
