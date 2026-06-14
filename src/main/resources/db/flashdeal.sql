@@ -330,12 +330,13 @@ CREATE TABLE `tb_order_timeout_close_fail` (
   `fail_count` int(11) NOT NULL DEFAULT 0 COMMENT '失败次数',
   `max_fail_count` int(11) NOT NULL DEFAULT 3 COMMENT '最大自动处理失败次数',
   `last_fail_reason` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '最近失败原因',
-  `status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'INIT' COMMENT 'INIT/NEED_MANUAL/HANDLED',
+  `status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'INIT' COMMENT 'INIT/PROCESSING/NEED_MANUAL/HANDLED',
   `next_retry_time` datetime NULL DEFAULT NULL COMMENT '下次重试时间',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `uk_order_id` (`order_id`) USING BTREE,
+  KEY `idx_status_next_retry_time` (`status`, `next_retry_time`) USING BTREE,
   KEY `idx_status_update_time` (`status`, `update_time`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '订单超时关单失败事件表' ROW_FORMAT = Compact;
 

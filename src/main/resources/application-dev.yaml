@@ -59,9 +59,24 @@ outbox:
     sending-timeout-seconds: 60
     retry-base-delay-seconds: 10
     retry-max-delay-seconds: 300
+    confirm-timeout-seconds: 5
+  redis-stock-recovery:
+    enabled: true
+    publish-interval-seconds: 10
+    batch-size: 100
+    max-retry-count: 10
+    sending-timeout-seconds: 60
+    retry-delay-seconds: 60
 order-timeout:
   close-dlq:
-    max-fail-count: 3
+    max-fail-count: 5
+  close-retry:
+    enabled: true
+    fixed-delay-seconds: 60
+    batch-size: 100
+    base-delay-seconds: 60
+    max-delay-seconds: 3600
+    processing-timeout-seconds: 300
 
 seckill:
   stock-sync:

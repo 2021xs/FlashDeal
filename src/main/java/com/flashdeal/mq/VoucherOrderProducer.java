@@ -36,6 +36,9 @@ public class VoucherOrderProducer {
     @PostConstruct
     public void initCallbacks() {
         rabbitTemplate.setConfirmCallback((correlationData, ack, cause) -> {
+            if (isOutboxCorrelation(correlationData)) {
+                return;
+            }
             Long messageId = parseMessageId(correlationData == null ? null : correlationData.getId(), "confirm");
             if (messageId == null) {
                 return;
@@ -97,6 +100,12 @@ public class VoucherOrderProducer {
             String replyText,
             String exchange,
             String routingKey) {
+        if (message.getMessageProperties().getHeaders().containsKey("outboxEventId")) {
+            log.error("Order timeout outbox message returned, outboxEventId={}, exchange={}, routingKey={}, replyCode={}, replyText={}",
+                    message.getMessageProperties().getHeaders().get("outboxEventId"),
+                    exchange, routingKey, replyCode, replyText);
+            return;
+        }
         Long messageId = parseMessageId(message.getMessageProperties().getHeaders().get("messageId"), "return");
         if (messageId == null) {
             log.error("Seckill order message returned but messageId header is missing, exchange={}, routingKey={}, replyCode={}, replyText={}, body={}",
@@ -134,6 +143,12 @@ public class VoucherOrderProducer {
             log.error("Seckill order mq {} callback has invalid messageId={}", callbackType, rawMessageId, e);
             return null;
         }
+    }
+
+    private boolean isOutboxCorrelation(CorrelationData correlationData) {
+        return correlationData != null
+                && correlationData.getId() != null
+                && correlationData.getId().startsWith("outbox:");
     }
 
     private String limitReason(String reason) {

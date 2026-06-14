@@ -27,4 +27,13 @@ public interface OutboxEventMapper extends BaseMapper<OutboxEvent> {
                             @Param("limit") int limit);
 
     List<OutboxEvent> selectNeedManual(@Param("limit") int limit);
+
+    List<OutboxEvent> selectRedisStockRecoveryPublishable(
+            @Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    int recoverStuckRedisStockRecovery(@Param("staleBefore") LocalDateTime staleBefore,
+                                       @Param("nextRetryTime") LocalDateTime nextRetryTime,
+                                       @Param("limit") int limit);
+
+    List<OutboxEvent> selectRedisStockRecoveryNeedManual(@Param("limit") int limit);
 }

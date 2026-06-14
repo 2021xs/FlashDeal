@@ -12,9 +12,11 @@ import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFacto
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
+import org.springframework.amqp.rabbit.retry.ImmediateRequeueMessageRecoverer;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.retry.interceptor.RetryOperationsInterceptor;
@@ -213,16 +215,42 @@ public class RabbitMqConfig {
     }
 
     @Bean
+    public RetryOperationsInterceptor dlqRabbitRetryInterceptor() {
+        return RetryInterceptorBuilder.stateless()
+                .maxAttempts(3)
+                .backOffOptions(1000, 2.0, 5000)
+                .recoverer(new ImmediateRequeueMessageRecoverer())
+                .build();
+    }
+
+    @Bean
     public SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory(
             ConnectionFactory connectionFactory,
             MessageConverter messageConverter,
-            RetryOperationsInterceptor rabbitRetryInterceptor) {
+            @Qualifier("rabbitRetryInterceptor") RetryOperationsInterceptor rabbitRetryInterceptor) {
         SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
         factory.setConnectionFactory(connectionFactory);
         factory.setMessageConverter(messageConverter);
         factory.setAcknowledgeMode(org.springframework.amqp.core.AcknowledgeMode.MANUAL);
         factory.setDefaultRequeueRejected(false);
         factory.setAdviceChain(rabbitRetryInterceptor);
+        factory.setConcurrentConsumers(rabbitListenerConcurrency);
+        factory.setMaxConcurrentConsumers(rabbitListenerMaxConcurrency);
+        factory.setPrefetchCount(rabbitListenerPrefetch);
+        return factory;
+    }
+
+    @Bean
+    public SimpleRabbitListenerContainerFactory dlqRabbitListenerContainerFactory(
+            ConnectionFactory connectionFactory,
+            MessageConverter messageConverter,
+            @Qualifier("dlqRabbitRetryInterceptor") RetryOperationsInterceptor dlqRabbitRetryInterceptor) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setMessageConverter(messageConverter);
+        factory.setAcknowledgeMode(org.springframework.amqp.core.AcknowledgeMode.MANUAL);
+        factory.setDefaultRequeueRejected(true);
+        factory.setAdviceChain(dlqRabbitRetryInterceptor);
         factory.setConcurrentConsumers(rabbitListenerConcurrency);
         factory.setMaxConcurrentConsumers(rabbitListenerMaxConcurrency);
         factory.setPrefetchCount(rabbitListenerPrefetch);

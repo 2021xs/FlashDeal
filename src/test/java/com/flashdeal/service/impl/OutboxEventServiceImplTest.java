@@ -2,6 +2,7 @@ package com.flashdeal.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flashdeal.dto.OrderTimeoutMessage;
+import com.flashdeal.dto.RedisStockRecoveryMessage;
 import com.flashdeal.entity.OutboxEvent;
 import com.flashdeal.entity.VoucherOrder;
 import com.flashdeal.mapper.OutboxEventMapper;
@@ -48,5 +49,23 @@ class OutboxEventServiceImplTest {
         assertEquals("order:10", event.getBizKey());
         assertEquals(createTime.plusSeconds(30), event.getExpireTime());
         assertEquals(event.getExpireTime(), message.getExpireTime());
+    }
+
+    @Test
+    void redisStockRecoveryEventShouldBeUniqueByOrderAndContainRecoveryPayload() throws Exception {
+        OutboxEventServiceImpl service = new OutboxEventServiceImpl();
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        ReflectionTestUtils.setField(service, "objectMapper", objectMapper);
+        ReflectionTestUtils.setField(service, "redisStockRecoveryMaxRetryCount", 10);
+        VoucherOrder order = new VoucherOrder().setId(10L).setUserId(20L).setVoucherId(30L);
+
+        OutboxEvent event = service.buildRedisStockRecoveryEvent(order);
+        RedisStockRecoveryMessage message =
+                objectMapper.readValue(event.getPayload(), RedisStockRecoveryMessage.class);
+
+        assertEquals("REDIS_STOCK_RECOVERY", event.getEventType());
+        assertEquals("order:10", event.getBizKey());
+        assertEquals(10L, message.getOrderId());
+        assertEquals(30L, message.getVoucherId());
     }
 }

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flashdeal.dto.OrderTimeoutMessage;
+import com.flashdeal.dto.RedisStockRecoveryMessage;
 import com.flashdeal.entity.OutboxEvent;
 import com.flashdeal.entity.VoucherOrder;
 import com.flashdeal.enums.OutboxEventStatus;
@@ -36,6 +37,9 @@ public class OutboxEventServiceImpl extends ServiceImpl<OutboxEventMapper, Outbo
     @Value("${outbox.order-timeout.max-retry-count:5}")
     private int maxRetryCount;
 
+    @Value("${outbox.redis-stock-recovery.max-retry-count:10}")
+    private int redisStockRecoveryMaxRetryCount;
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void saveOrderTimeoutEvents(Collection<VoucherOrder> orders) {
@@ -45,6 +49,13 @@ public class OutboxEventServiceImpl extends ServiceImpl<OutboxEventMapper, Outbo
         List<OutboxEvent> events = orders.stream().map(this::buildOrderTimeoutEvent).collect(Collectors.toList());
         if (!saveBatch(events)) {
             throw new IllegalStateException("Save order timeout outbox events failed");
+        }
+    }
+
+    @Override
+    public void saveRedisStockRecoveryEvent(VoucherOrder order) {
+        if (!save(buildRedisStockRecoveryEvent(order))) {
+            throw new IllegalStateException("Save Redis stock recovery outbox event failed, orderId=" + order.getId());
         }
     }
 
@@ -79,6 +90,21 @@ public class OutboxEventServiceImpl extends ServiceImpl<OutboxEventMapper, Outbo
         return baseMapper.selectNeedManual(Math.max(1, limit));
     }
 
+    @Override
+    public List<OutboxEvent> listRedisStockRecoveryPublishable(LocalDateTime now, int limit) {
+        return baseMapper.selectRedisStockRecoveryPublishable(now, Math.max(1, limit));
+    }
+
+    @Override
+    public int recoverStuckRedisStockRecovery(LocalDateTime staleBefore, LocalDateTime nextRetryTime, int limit) {
+        return baseMapper.recoverStuckRedisStockRecovery(staleBefore, nextRetryTime, Math.max(1, limit));
+    }
+
+    @Override
+    public List<OutboxEvent> listRedisStockRecoveryNeedManual(int limit) {
+        return baseMapper.selectRedisStockRecoveryNeedManual(Math.max(1, limit));
+    }
+
     OutboxEvent buildOrderTimeoutEvent(VoucherOrder order) {
         LocalDateTime createTime = order.getCreateTime() == null ? LocalDateTime.now() : order.getCreateTime();
         LocalDateTime expireTime = createTime.plusSeconds(Math.max(1L, orderTimeoutSeconds));
@@ -102,11 +128,38 @@ public class OutboxEventServiceImpl extends ServiceImpl<OutboxEventMapper, Outbo
                 .setExpireTime(expireTime);
     }
 
+    OutboxEvent buildRedisStockRecoveryEvent(VoucherOrder order) {
+        RedisStockRecoveryMessage message = new RedisStockRecoveryMessage();
+        message.setOrderId(order.getId());
+        message.setUserId(order.getUserId());
+        message.setVoucherId(order.getVoucherId());
+        return new OutboxEvent()
+                .setEventId(UUID.randomUUID().toString().replace("-", ""))
+                .setEventType(REDIS_STOCK_RECOVERY_EVENT)
+                .setBizKey("order:" + order.getId())
+                .setExchangeName("INTERNAL")
+                .setRoutingKey("REDIS_STOCK_RECOVERY")
+                .setPayload(toJson(message))
+                .setStatus(OutboxEventStatus.INIT.name())
+                .setRetryCount(0)
+                .setMaxRetryCount(Math.max(1, redisStockRecoveryMaxRetryCount))
+                .setNextRetryTime(LocalDateTime.now());
+    }
+
     private String toJson(OrderTimeoutMessage message) {
         try {
             return objectMapper.writeValueAsString(message);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Serialize order timeout outbox payload failed, orderId="
+                    + message.getOrderId(), e);
+        }
+    }
+
+    private String toJson(RedisStockRecoveryMessage message) {
+        try {
+            return objectMapper.writeValueAsString(message);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Serialize Redis stock recovery payload failed, orderId="
                     + message.getOrderId(), e);
         }
     }

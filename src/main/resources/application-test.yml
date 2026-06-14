@@ -25,6 +25,12 @@ order:
 outbox:
   order-timeout:
     enabled: false
+  redis-stock-recovery:
+    enabled: false
+
+order-timeout:
+  close-retry:
+    enabled: false
 
 seckill:
   stock-sync:

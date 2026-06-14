@@ -30,7 +30,8 @@ class OrderTimeoutOutboxPublishTaskTest {
         fixture.task.publishOne(event);
 
         verify(fixture.orderTimeoutProducer).sendOrderTimeoutMessage(
-                any(OrderTimeoutMessage.class), eq(event.getExchangeName()), eq(event.getRoutingKey()), any(Long.class));
+                any(OrderTimeoutMessage.class), eq(event.getExchangeName()), eq(event.getRoutingKey()),
+                any(Long.class), eq(event.getEventId()));
         verify(fixture.outboxEventService).markSent(event);
         verify(fixture.outboxEventService, never()).markPublishFailed(any(), any(), any());
     }
@@ -41,7 +42,7 @@ class OrderTimeoutOutboxPublishTaskTest {
         OutboxEvent event = fixture.event(LocalDateTime.now().plusSeconds(60));
         when(fixture.outboxEventService.claimSending(event)).thenReturn(true);
         doThrow(new IllegalStateException("rabbit down")).when(fixture.orderTimeoutProducer)
-                .sendOrderTimeoutMessage(any(), any(), any(), any(Long.class));
+                .sendOrderTimeoutMessage(any(), any(), any(), any(Long.class), any());
 
         fixture.task.publishOne(event);
 
@@ -57,7 +58,7 @@ class OrderTimeoutOutboxPublishTaskTest {
 
         fixture.task.publishOne(event);
 
-        verify(fixture.orderTimeoutProducer, never()).sendOrderTimeoutMessage(any(), any(), any(), any(Long.class));
+        verify(fixture.orderTimeoutProducer, never()).sendOrderTimeoutMessage(any(), any(), any(), any(Long.class), any());
     }
 
     @Test

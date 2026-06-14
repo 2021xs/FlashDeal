@@ -590,11 +590,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Override
     public boolean closeUnpaidOrderIfNecessary(Long orderId) {
         VoucherOrder closedOrder = transactionTemplate.execute(status -> closeUnpaidOrderInTransaction(orderId));
-        if (closedOrder == null) {
-            return false;
-        }
-        recoverRedisStockAfterClose(closedOrder);
-        return true;
+        return closedOrder != null;
     }
 
     private VoucherOrder closeUnpaidOrderInTransaction(Long orderId) {
@@ -620,8 +616,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (!stockRecovered) {
             throw new IllegalStateException("Recover MySQL seckill stock failed, orderId=" + orderId + ", voucherId=" + voucherId);
         }
+        outboxEventService.saveRedisStockRecoveryEvent(order);
 
-        log.info("Timeout order canceled and stock recovered, orderId={}, userId={}, voucherId={}",
+        log.info("Timeout order canceled, MySQL stock recovered and Redis recovery event saved, orderId={}, userId={}, voucherId={}",
                 orderId, order.getUserId(), voucherId);
         return order;
     }
@@ -640,21 +637,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 .setSql("stock = stock + 1")
                 .eq("voucher_id", voucherId)
                 .update();
-    }
-
-    private void recoverRedisStockAfterClose(VoucherOrder order) {
-        Long voucherId = order.getVoucherId();
-        try {
-            stringRedisTemplate.opsForValue().increment(SECKILL_STOCK_KEY + voucherId);
-        } catch (Exception e) {
-            log.error("Recover Redis seckill stock failed after order closed, orderId={}, userId={}, voucherId={}",
-                    order.getId(), order.getUserId(), voucherId, e);
-            return;
-        }
-        // Business rule: timeout close releases stock only. The Redis one-user-one-order mark
-        // is kept because tb_voucher_order has a unique (user_id, voucher_id) constraint.
-        log.info("Redis seckill stock recovered after timeout close, orderId={}, userId={}, voucherId={}",
-                order.getId(), order.getUserId(), voucherId);
     }
 
     private VoucherOrderMessage buildVoucherOrderMessage(Long voucherId, Long userId, long orderId, long messageId) {

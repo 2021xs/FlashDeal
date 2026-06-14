@@ -21,4 +21,59 @@
             END,
             next_retry_time = VALUES(next_retry_time)
     </insert>
+
+    <select id="selectRetryable" resultType="com.flashdeal.entity.OrderTimeoutCloseFail">
+        SELECT id, order_id, user_id, voucher_id, fail_count, max_fail_count,
+               last_fail_reason, status, next_retry_time, create_time, update_time
+        FROM tb_order_timeout_close_fail
+        WHERE status = 'INIT'
+          AND (next_retry_time IS NULL OR next_retry_time &lt;= #{now})
+        ORDER BY update_time ASC
+        LIMIT #{limit}
+    </select>
+
+    <update id="claimRetry">
+        UPDATE tb_order_timeout_close_fail
+        SET status = 'PROCESSING'
+        WHERE id = #{id}
+          AND status = 'INIT'
+          AND fail_count = #{expectedFailCount}
+    </update>
+
+    <update id="markRetryFailed">
+        UPDATE tb_order_timeout_close_fail
+        SET fail_count = fail_count + 1,
+            last_fail_reason = #{failReason},
+            status = CASE
+                WHEN fail_count + 1 &gt;= max_fail_count THEN 'NEED_MANUAL'
+                ELSE 'INIT'
+            END,
+            next_retry_time = CASE
+                WHEN fail_count + 1 &gt;= max_fail_count THEN NULL
+                ELSE #{nextRetryTime}
+            END
+        WHERE id = #{id}
+          AND status = 'PROCESSING'
+          AND fail_count = #{expectedFailCount}
+    </update>
+
+    <update id="markHandled">
+        UPDATE tb_order_timeout_close_fail
+        SET status = 'HANDLED',
+            next_retry_time = NULL
+        WHERE id = #{id}
+          AND status = 'PROCESSING'
+          AND fail_count = #{expectedFailCount}
+    </update>
+
+    <update id="recoverStuckProcessing">
+        UPDATE tb_order_timeout_close_fail
+        SET status = 'INIT',
+            next_retry_time = #{nextRetryTime},
+            last_fail_reason = 'ORDER_CLOSE_RETRY_PROCESSING_TIMEOUT'
+        WHERE status = 'PROCESSING'
+          AND update_time &lt;= #{staleBefore}
+        ORDER BY update_time ASC
+        LIMIT #{limit}
+    </update>
 </mapper>

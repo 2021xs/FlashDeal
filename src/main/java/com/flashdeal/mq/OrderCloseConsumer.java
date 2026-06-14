@@ -22,14 +22,9 @@ public class OrderCloseConsumer {
     @RabbitListener(queues = ORDER_CLOSE_QUEUE, containerFactory = "rabbitListenerContainerFactory")
     public void handleOrderClose(OrderTimeoutMessage timeoutMessage, Message message, Channel channel) throws Exception {
         long deliveryTag = message.getMessageProperties().getDeliveryTag();
-        try {
-            log.info("Order close message received, orderId={}", timeoutMessage.getOrderId());
-            voucherOrderService.closeTimeoutOrder(timeoutMessage.getOrderId());
-            channel.basicAck(deliveryTag, false);
-            log.info("Order close message consumed, orderId={}", timeoutMessage.getOrderId());
-        } catch (Exception e) {
-            log.error("Order close message consume failed, orderId={}", timeoutMessage.getOrderId(), e);
-            channel.basicNack(deliveryTag, false, false);
-        }
+        log.info("Order close message received, orderId={}", timeoutMessage.getOrderId());
+        voucherOrderService.closeTimeoutOrder(timeoutMessage.getOrderId());
+        channel.basicAck(deliveryTag, false);
+        log.info("Order close message consumed, orderId={}", timeoutMessage.getOrderId());
     }
 }

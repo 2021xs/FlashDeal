@@ -7,6 +7,7 @@ import com.flashdeal.service.IOrderTimeoutCloseFailService;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Service
 public class OrderTimeoutCloseFailServiceImpl
@@ -76,6 +77,40 @@ public class OrderTimeoutCloseFailServiceImpl
                 .set("next_retry_time", null)
                 .eq("order_id", orderId)
                 .update();
+    }
+
+    @Override
+    public List<OrderTimeoutCloseFail> listRetryable(LocalDateTime now, int limit) {
+        return baseMapper.selectRetryable(now, Math.max(1, limit));
+    }
+
+    @Override
+    public boolean claimRetry(OrderTimeoutCloseFail fail) {
+        return baseMapper.claimRetry(fail.getId(), fail.getFailCount()) > 0;
+    }
+
+    @Override
+    public boolean markRetryFailed(OrderTimeoutCloseFail fail,
+                                   String reason,
+                                   long baseRetryDelaySeconds,
+                                   long maxRetryDelaySeconds) {
+        int nextFailCount = (fail.getFailCount() == null ? 0 : fail.getFailCount()) + 1;
+        long safeBaseDelay = baseRetryDelaySeconds <= 0 ? 60 : baseRetryDelaySeconds;
+        long safeMaxDelay = maxRetryDelaySeconds <= 0 ? safeBaseDelay : maxRetryDelaySeconds;
+        LocalDateTime nextRetryTime = LocalDateTime.now()
+                .plusSeconds(calculateBackoffSeconds(nextFailCount, safeBaseDelay, safeMaxDelay));
+        return baseMapper.markRetryFailed(
+                fail.getId(), fail.getFailCount(), nextRetryTime, limitReason(reason)) > 0;
+    }
+
+    @Override
+    public boolean markHandled(OrderTimeoutCloseFail fail) {
+        return baseMapper.markHandled(fail.getId(), fail.getFailCount()) > 0;
+    }
+
+    @Override
+    public int recoverStuckProcessing(LocalDateTime staleBefore, LocalDateTime nextRetryTime, int limit) {
+        return baseMapper.recoverStuckProcessing(staleBefore, nextRetryTime, Math.max(1, limit));
     }
 
     private String limitReason(String reason) {

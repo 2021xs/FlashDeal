@@ -218,10 +218,13 @@ PUT /shop
 订单创建成功
   -> 同事务写入 tb_outbox_event
   -> OrderTimeoutOutboxPublishTask 发布 OrderTimeoutMessage 到 TTL 延迟队列
+  -> 收到 RabbitMQ Publisher Confirm 后标记超时事件 SENT
   -> TTL 到期后进入关闭队列
-  -> 消费者检查订单状态
+  -> 消费者快速重试并检查订单状态
   -> 仍为未支付则取消订单
-  -> 回补 MySQL 库存和 Redis 秒杀库存
+  -> 同事务回补 MySQL 库存并写入 Redis 库存回补 Outbox
+  -> RedisStockRecoveryOutboxTask 使用幂等 Lua 回补 Redis 库存
+  -> 关单快速重试耗尽后进入 DLQ，登记失败任务并由补偿 Task 退避重试
   -> 不删除 Redis 一人一单标记
 ```
 
@@ -391,7 +394,7 @@ authorization: {token}
 ```
 
 ```text
-设计秒杀订单状态流转，订单创建同事务写入 `tb_outbox_event`，再由 Outbox 发布任务基于 RabbitMQ TTL + DLX 触发超时未支付自动关单，通过条件更新保证支付与关单并发安全，并在取消成功后回补 MySQL 和 Redis 库存。
+设计秒杀订单状态流转，订单创建同事务写入 `tb_outbox_event`，再由 Outbox 发布任务基于 RabbitMQ TTL + DLX 触发超时未支付自动关单；通过条件更新保证支付与关单并发安全，DLQ 与补偿 Task 负责失败关单退避重试，Redis 库存回补通过独立 Outbox 和幂等 Lua 最终收敛。
 ```
 
 压测数据尚未执行，简历中不要填写具体 QPS、平均响应时间、P95 或提升比例。
@@ -422,7 +425,7 @@ authorization: {token}
 - `tb_mq_message`：负责秒杀订单消息落表后的 RabbitMQ 投递可靠性。
 - `tb_outbox_event`：负责订单创建成功后的超时关单事件不丢失。
 
-订单与 `ORDER_TIMEOUT` Outbox 事件在同一个 MySQL 事务中提交。发布任务按固定 `expireTime` 计算剩余延迟，发布失败退避重试，耗尽后进入 `NEED_MANUAL`。
+订单与 `ORDER_TIMEOUT` Outbox 事件在同一个 MySQL 事务中提交。发布任务按固定 `expireTime` 计算剩余延迟，收到 Broker Confirm 后标记 `SENT`，发布失败退避重试，耗尽后进入 `NEED_MANUAL`。关单执行失败先由消费者快速重试，耗尽后由 DLQ 持久化失败任务，再由补偿 Task 低频重试；关单后的 Redis 库存回补由独立 Outbox 和幂等 Lua 保证。
 
 ## 项目来源
 

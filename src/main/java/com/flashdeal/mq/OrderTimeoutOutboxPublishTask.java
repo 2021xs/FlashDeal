@@ -67,7 +67,7 @@ public class OrderTimeoutOutboxPublishTask {
             OrderTimeoutMessage message = objectMapper.readValue(event.getPayload(), OrderTimeoutMessage.class);
             long remainingDelayMillis = calculateRemainingDelayMillis(event.getExpireTime(), LocalDateTime.now());
             orderTimeoutProducer.sendOrderTimeoutMessage(
-                    message, event.getExchangeName(), event.getRoutingKey(), remainingDelayMillis);
+                    message, event.getExchangeName(), event.getRoutingKey(), remainingDelayMillis, event.getEventId());
             if (!outboxEventService.markSent(event)) {
                 log.error("Mark order timeout outbox event SENT failed, eventId={}, orderId={}",
                         event.getEventId(), message.getOrderId());
