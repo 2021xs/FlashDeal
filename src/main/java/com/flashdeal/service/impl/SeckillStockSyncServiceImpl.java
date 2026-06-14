@@ -50,7 +50,7 @@ public class SeckillStockSyncServiceImpl implements SeckillStockSyncService, App
         LocalDateTime now = LocalDateTime.now();
         List<SeckillVoucher> vouchers = seckillVoucherService.query()
                 .ge("stock", 0)
-                .gt("end_time", now)
+                .gt("begin_time", now)
                 .list();
         for (SeckillVoucher voucher : vouchers) {
             syncOne(voucher, force, result);
@@ -61,6 +61,13 @@ public class SeckillStockSyncServiceImpl implements SeckillStockSyncService, App
     private void syncOne(SeckillVoucher voucher, boolean force, SeckillStockSyncResult result) {
         Long voucherId = voucher.getVoucherId();
         String key = SECKILL_STOCK_KEY + voucherId;
+        LocalDateTime beginTime = voucher.getBeginTime();
+        if (beginTime == null || !LocalDateTime.now().isBefore(beginTime)) {
+            result.addSkipped();
+            log.warn("Skip seckill stock sync because activity has started or begin time is missing, voucherId={}, beginTime={}, force={}",
+                    voucherId, beginTime, force);
+            return;
+        }
         try {
             Boolean exists = stringRedisTemplate.hasKey(key);
             if (Boolean.TRUE.equals(exists) && !force) {
