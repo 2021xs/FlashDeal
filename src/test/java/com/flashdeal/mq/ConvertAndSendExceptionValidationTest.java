@@ -102,7 +102,7 @@ class ConvertAndSendExceptionValidationTest {
                 String.class,
                 messageId
         );
-        Assertions.assertEquals("INIT", status);
+        Assertions.assertEquals("SEND_FAILED", status);
         Assertions.assertFalse(stringRedisTemplate.opsForZSet()
                 .range("seckill:pending", 0, -1).isEmpty());
 

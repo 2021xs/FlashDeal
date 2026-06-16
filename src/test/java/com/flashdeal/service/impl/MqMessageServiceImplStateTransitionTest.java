@@ -27,6 +27,7 @@ class MqMessageServiceImplStateTransitionTest {
         fixture.service.markConfirmed(1L);
 
         Collection<String> statuses = captureStatuses(fixture.mapper);
+        assertTrue(statuses.contains(MqMessageStatus.SEND_FAILED.name()));
         assertFalse(statuses.contains(MqMessageStatus.RETURNED.name()));
         assertFalse(statuses.contains(MqMessageStatus.CONSUMED.name()));
         assertFalse(statuses.contains(MqMessageStatus.FAILED.name()));
@@ -40,6 +41,7 @@ class MqMessageServiceImplStateTransitionTest {
         fixture.service.markReturned(1L, "returned", LocalDateTime.now());
 
         Collection<String> statuses = captureStatuses(fixture.mapper);
+        assertTrue(statuses.contains(MqMessageStatus.SEND_FAILED.name()));
         assertTrue(statuses.contains(MqMessageStatus.CONFIRMED.name()));
         assertFalse(statuses.contains(MqMessageStatus.CONSUMED.name()));
         assertFalse(statuses.contains(MqMessageStatus.FAILED.name()));

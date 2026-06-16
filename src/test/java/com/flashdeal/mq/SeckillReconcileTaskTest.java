@@ -46,12 +46,12 @@ class SeckillReconcileTaskTest {
 
         fixture.task.reconcileNeedManualSeckillMessages();
 
-        verify(fixture.mqMessageService).markNeedManualAfterReconcile(1L, "WAITING_REDIS_MYSQL_RECONCILE");
+        verify(fixture.mqMessageService).markFailedAfterReconcile(1L, "WAITING_REDIS_MYSQL_RECONCILE");
         verify(fixture.seckillReservationService, never()).rollback(any(), any(), any());
     }
 
     @Test
-    void missingOrderAndPendingShouldBeMarkedFailedWithoutRedisRollback() {
+    void missingOrderAndPendingAbsentShouldStayNeedManualWithoutRedisRollback() {
         Fixture fixture = new Fixture();
         QueryChainWrapper<VoucherOrder> query = mock(QueryChainWrapper.class);
         when(fixture.voucherOrderService.getById(10L)).thenReturn(null);
@@ -62,7 +62,7 @@ class SeckillReconcileTaskTest {
 
         fixture.task.reconcileNeedManualSeckillMessages();
 
-        verify(fixture.mqMessageService).markFailedAfterReconcile(
+        verify(fixture.mqMessageService).markNeedManualAfterReconcile(
                 1L, "ORDER_NOT_FOUND_AND_REDIS_PENDING_ABSENT");
         verify(fixture.seckillReservationService, never()).rollback(any(), any(), any());
     }

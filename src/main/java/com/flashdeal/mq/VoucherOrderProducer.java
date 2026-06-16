@@ -33,6 +33,9 @@ public class VoucherOrderProducer {
     @Value("${seckill.mq-message.returned-next-retry-delay-seconds:30}")
     private Long returnedNextRetryDelaySeconds;
 
+    @Value("${seckill.mq-message.send-failed-next-retry-delay-seconds:1}")
+    private Long sendFailedNextRetryDelaySeconds;
+
     @PostConstruct
     public void initCallbacks() {
         rabbitTemplate.setConfirmCallback((correlationData, ack, cause) -> {
@@ -59,7 +62,16 @@ public class VoucherOrderProducer {
     }
 
     public void sendSeckillOrder(VoucherOrderMessage message) {
-        doSendSeckillOrder(message);
+        try {
+            doSendSeckillOrder(message);
+        } catch (RuntimeException e) {
+            Long messageId = message.getMessageId();
+            LocalDateTime nextRetryTime = LocalDateTime.now().plusSeconds(sendFailedNextRetryDelaySeconds);
+            boolean updated = mqMessageService.markSendFailed(messageId, limitReason(e.getMessage()), nextRetryTime);
+            log.error("Seckill order message send failed before convertAndSend returned, messageId={}, orderId={}, userId={}, voucherId={}, updated={}",
+                    messageId, message.getOrderId(), message.getUserId(), message.getVoucherId(), updated, e);
+            throw e;
+        }
         Long messageId = message.getMessageId();
         boolean updated = mqMessageService.markSent(messageId);
         if (!updated) {

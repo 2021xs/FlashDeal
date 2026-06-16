@@ -35,10 +35,19 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     }
 
     @Override
+    public boolean markSendFailed(Long messageId, String reason, LocalDateTime nextRetryTime) {
+        return updateStatusIfIn(messageId,
+                Arrays.asList(MqMessageStatus.INIT),
+                MqMessageStatus.SEND_FAILED,
+                reason,
+                nextRetryTime);
+    }
+
+    @Override
     public boolean markConfirmed(Long messageId) {
         return updateStatusIfIn(messageId,
                 Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING,
-                        MqMessageStatus.CONFIRM_FAILED),
+                        MqMessageStatus.SEND_FAILED, MqMessageStatus.CONFIRM_FAILED),
                 MqMessageStatus.CONFIRMED,
                 null,
                 null);
@@ -48,7 +57,7 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     public boolean markConfirmFailed(Long messageId, String reason, LocalDateTime nextRetryTime) {
         return updateStatusIfIn(messageId,
                 Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING,
-                        MqMessageStatus.CONFIRM_FAILED),
+                        MqMessageStatus.SEND_FAILED, MqMessageStatus.CONFIRM_FAILED),
                 MqMessageStatus.CONFIRM_FAILED,
                 reason,
                 nextRetryTime);
@@ -58,7 +67,8 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     public boolean markReturned(Long messageId, String reason, LocalDateTime nextRetryTime) {
         return updateStatusIfIn(messageId,
                 Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.CONFIRMED,
-                        MqMessageStatus.RETRYING, MqMessageStatus.CONFIRM_FAILED, MqMessageStatus.RETURNED),
+                        MqMessageStatus.RETRYING, MqMessageStatus.SEND_FAILED, MqMessageStatus.CONFIRM_FAILED,
+                        MqMessageStatus.RETURNED),
                 MqMessageStatus.RETURNED,
                 reason,
                 nextRetryTime);
@@ -67,8 +77,8 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     @Override
     public boolean markConsumed(Long messageId) {
         boolean updated = updateStatusIfIn(messageId,
-                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.CONFIRMED, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.RETURNED,
-                        MqMessageStatus.CONFIRM_FAILED),
+                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.CONFIRMED, MqMessageStatus.SENT, MqMessageStatus.RETRYING,
+                        MqMessageStatus.SEND_FAILED, MqMessageStatus.RETURNED, MqMessageStatus.CONFIRM_FAILED),
                 MqMessageStatus.CONSUMED,
                 null,
                 null);
@@ -82,8 +92,8 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     @Override
     public boolean markConsumedByBiz(String bizType, Long bizId) {
         boolean updated = updateStatusByBizIfIn(bizType, bizId,
-                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.CONFIRMED, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.RETURNED,
-                        MqMessageStatus.CONFIRM_FAILED),
+                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.CONFIRMED, MqMessageStatus.SENT, MqMessageStatus.RETRYING,
+                        MqMessageStatus.SEND_FAILED, MqMessageStatus.RETURNED, MqMessageStatus.CONFIRM_FAILED),
                 MqMessageStatus.CONSUMED,
                 null,
                 null);
@@ -99,8 +109,8 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     @Override
     public boolean markFailedAfterDlqInspection(Long messageId, String reason) {
         return updateStatusIfIn(messageId,
-                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.CONFIRM_FAILED,
-                        MqMessageStatus.RETURNED, MqMessageStatus.CONFIRMED),
+                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.SEND_FAILED,
+                        MqMessageStatus.CONFIRM_FAILED, MqMessageStatus.RETURNED, MqMessageStatus.CONFIRMED),
                 MqMessageStatus.FAILED,
                 reason,
                 null);
@@ -109,8 +119,8 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     @Override
     public boolean markFailedAfterDlqInspectionByBiz(String bizType, Long bizId, String reason) {
         return updateStatusByBizIfIn(bizType, bizId,
-                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.CONFIRM_FAILED,
-                        MqMessageStatus.RETURNED, MqMessageStatus.CONFIRMED),
+                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.SEND_FAILED,
+                        MqMessageStatus.CONFIRM_FAILED, MqMessageStatus.RETURNED, MqMessageStatus.CONFIRMED),
                 MqMessageStatus.FAILED,
                 reason,
                 null);
@@ -119,8 +129,8 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     @Override
     public boolean markNeedManual(Long messageId, String reason) {
         return updateStatusIfIn(messageId,
-                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.CONFIRM_FAILED,
-                        MqMessageStatus.RETURNED),
+                Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.SEND_FAILED,
+                        MqMessageStatus.CONFIRM_FAILED, MqMessageStatus.RETURNED),
                 MqMessageStatus.NEED_MANUAL,
                 reason,
                 null);
@@ -174,7 +184,7 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     @Override
     public List<MqMessage> listRetryableMessages(LocalDateTime now, LocalDateTime sentBefore, int limit) {
         return baseMapper.selectRetryableMessages(
-                toCodes(Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.RETRYING,
+                toCodes(Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SEND_FAILED, MqMessageStatus.RETRYING,
                         MqMessageStatus.CONFIRM_FAILED, MqMessageStatus.RETURNED)),
                 now,
                 sentBefore,
@@ -184,7 +194,7 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     @Override
     public List<MqMessage> listExceededRetryMessages(LocalDateTime now, LocalDateTime sentBefore, int limit) {
         return baseMapper.selectExceededRetryMessages(
-                toCodes(Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.RETRYING,
+                toCodes(Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SEND_FAILED, MqMessageStatus.RETRYING,
                         MqMessageStatus.CONFIRM_FAILED, MqMessageStatus.RETURNED)),
                 now,
                 sentBefore,

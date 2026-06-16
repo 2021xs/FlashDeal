@@ -13,8 +13,10 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -29,6 +31,7 @@ class VoucherOrderProducerTest {
         VoucherOrderProducer producer = new VoucherOrderProducer();
         ReflectionTestUtils.setField(producer, "rabbitTemplate", rabbitTemplate);
         ReflectionTestUtils.setField(producer, "mqMessageService", mqMessageService);
+        ReflectionTestUtils.setField(producer, "sendFailedNextRetryDelaySeconds", 1L);
 
         producer.sendSeckillOrder(message());
 
@@ -46,6 +49,27 @@ class VoucherOrderProducerTest {
 
         assertEquals(100L, processed.getMessageProperties().getHeaders().get("messageId"));
         assertEquals(MessageDeliveryMode.PERSISTENT, processed.getMessageProperties().getDeliveryMode());
+    }
+
+    @Test
+    void sendSeckillOrderShouldMarkSendFailedWhenConvertAndSendThrows() {
+        RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+        IMqMessageService mqMessageService = mock(IMqMessageService.class);
+        VoucherOrderProducer producer = new VoucherOrderProducer();
+        ReflectionTestUtils.setField(producer, "rabbitTemplate", rabbitTemplate);
+        ReflectionTestUtils.setField(producer, "mqMessageService", mqMessageService);
+        ReflectionTestUtils.setField(producer, "sendFailedNextRetryDelaySeconds", 1L);
+        doThrow(new IllegalStateException("rabbit down")).when(rabbitTemplate).convertAndSend(
+                eq("flashdeal.seckill.order.exchange"),
+                eq("flashdeal.seckill.order"),
+                any(Object.class),
+                any(MessagePostProcessor.class),
+                any(CorrelationData.class)
+        );
+
+        assertThrows(IllegalStateException.class, () -> producer.sendSeckillOrder(message()));
+
+        verify(mqMessageService).markSendFailed(eq(100L), eq("rabbit down"), any());
     }
 
     private VoucherOrderMessage message() {

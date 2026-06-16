@@ -42,6 +42,7 @@ class MqMessageRetryTaskTest {
         ArgumentCaptor<List> statusCaptor = ArgumentCaptor.forClass(List.class);
         verify(fixture.mqMessageService).markRetrying(eq(1L), statusCaptor.capture(), eq(0), nextRetryCaptor.capture(), eq("RETRYING"));
         assertTrue(statusCaptor.getValue().contains(MqMessageStatus.INIT));
+        assertTrue(statusCaptor.getValue().contains(MqMessageStatus.SEND_FAILED));
         assertTrue(!statusCaptor.getValue().contains(MqMessageStatus.RETRYING));
         assertTrue(nextRetryCaptor.getValue().isAfter(LocalDateTime.now().minusSeconds(1)));
         verify(fixture.voucherOrderProducer).resendSeckillOrder(any(VoucherOrderMessage.class));
@@ -95,7 +96,7 @@ class MqMessageRetryTaskTest {
     void exceededRetryMessageShouldEnterNeedManualWithExpectedState() throws Exception {
         Fixture fixture = new Fixture();
         MqMessage message = message();
-        message.setStatus(MqMessageStatus.CONFIRM_FAILED.name());
+        message.setStatus(MqMessageStatus.SEND_FAILED.name());
         message.setRetryCount(3);
         message.setMaxRetryCount(3);
         when(fixture.mqMessageService.listExceededRetryMessages(
@@ -108,7 +109,7 @@ class MqMessageRetryTaskTest {
         fixture.task.retrySeckillOrderMessages();
 
         verify(fixture.mqMessageService).markNeedManualAfterRetryExceeded(
-                eq(1L), eq(MqMessageStatus.CONFIRM_FAILED), eq(3), any());
+                eq(1L), eq(MqMessageStatus.SEND_FAILED), eq(3), any());
         verify(fixture.voucherOrderProducer, never()).resendSeckillOrder(any());
     }
 

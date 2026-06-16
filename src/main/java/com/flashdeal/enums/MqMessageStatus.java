@@ -3,6 +3,7 @@ package com.flashdeal.enums;
 public enum MqMessageStatus {
 
     INIT,
+    SEND_FAILED,
     SENT,
     RETRYING,
     CONFIRMED,

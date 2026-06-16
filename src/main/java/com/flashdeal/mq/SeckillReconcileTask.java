@@ -84,15 +84,15 @@ public class SeckillReconcileTask {
         }
 
         if (seckillReservationService.hasPending(orderId)) {
-            keepNeedManual(message, orderId, userId, voucherId,
-                    "WAITING_REDIS_MYSQL_RECONCILE", null);
+            boolean updated = mqMessageService.markFailedAfterReconcile(
+                    messageId, "WAITING_REDIS_MYSQL_RECONCILE");
+            log.info("Seckill reconcile removed message from NEED_MANUAL because Redis pending still exists; Redis-MySQL reconcile owns rollback, messageId={}, orderId={}, voucherId={}, userId={}, oldStatus={}, updated={}",
+                    messageId, orderId, voucherId, userId, oldStatus, updated);
             return;
         }
 
-        boolean updated = mqMessageService.markFailedAfterReconcile(
-                messageId, "ORDER_NOT_FOUND_AND_REDIS_PENDING_ABSENT");
-        log.error("Seckill message inspection marked FAILED because order and Redis pending are absent, messageId={}, orderId={}, voucherId={}, userId={}, oldStatus={}, updated={}",
-                messageId, orderId, voucherId, userId, oldStatus, updated);
+        keepNeedManual(message, orderId, userId, voucherId,
+                "ORDER_NOT_FOUND_AND_REDIS_PENDING_ABSENT", null);
     }
 
     private VoucherOrder findExistingOrder(Long orderId, Long userId, Long voucherId) {

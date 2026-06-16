@@ -21,6 +21,7 @@ public class MqMessageRetryTask {
 
     private static final List<MqMessageStatus> CLAIMABLE_STATUSES = Arrays.asList(
             MqMessageStatus.INIT,
+            MqMessageStatus.SEND_FAILED,
             MqMessageStatus.CONFIRM_FAILED,
             MqMessageStatus.RETURNED,
             MqMessageStatus.SENT

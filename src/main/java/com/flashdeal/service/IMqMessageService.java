@@ -16,6 +16,8 @@ public interface IMqMessageService extends IService<MqMessage> {
 
     boolean markSentForRetry(Long messageId);
 
+    boolean markSendFailed(Long messageId, String reason, LocalDateTime nextRetryTime);
+
     boolean markConfirmed(Long messageId);
 
     boolean markConfirmFailed(Long messageId, String reason, LocalDateTime nextRetryTime);
