@@ -5,6 +5,7 @@ import org.springframework.util.StreamUtils;
 
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SeckillLuaContractTest {
@@ -30,11 +31,11 @@ class SeckillLuaContractTest {
     }
 
     @Test
-    void claimLuaShouldAllowProcessingTimeoutReclaim() throws Exception {
+    void claimLuaShouldOnlyMovePendingToProcessing() throws Exception {
         String lua = resource("seckill_reservation_claim.lua");
-        assertTrue(lua.contains("local processingPrefix = ARGV[3] .. ':PROCESSING:'"));
-        assertTrue(lua.contains("nowMillis - processingTime >= processingTimeoutMillis"));
         assertTrue(lua.contains("redis.call('set', reservationKey, ARGV[3] .. ':PROCESSING:' .. ARGV[4])"));
+        assertFalse(lua.contains("processingTimeoutMillis"));
+        assertFalse(lua.contains("nowMillis - processingTime"));
     }
 
     @Test

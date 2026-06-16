@@ -134,10 +134,9 @@ class VoucherOrderConsumerBatchTest {
     }
 
     @Test
-    void timedOutProcessingReclaimFailureShouldPublishRetryAndAck() throws Exception {
+    void timedOutProcessingClaimFailureShouldPublishRetryAndAck() throws Exception {
         Fixture fixture = new Fixture();
         when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false).thenReturn(false);
-        when(fixture.seckillReservationService.getProcessingTimeoutMillis()).thenReturn(1000L);
         when(fixture.seckillReservationService.getReservationState(30L, 20L))
                 .thenReturn(state(SeckillReservationStatus.PROCESSING, 10L,
                         System.currentTimeMillis() - 2000L, "10:PROCESSING:1"));
@@ -242,22 +241,19 @@ class VoucherOrderConsumerBatchTest {
     }
 
     @Test
-    void timedOutProcessingReservationShouldBeReclaimedAndProcessed() throws Exception {
+    void timedOutProcessingReservationShouldWaitForReconcileInsteadOfReclaim() throws Exception {
         Fixture fixture = new Fixture();
-        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false).thenReturn(true);
-        when(fixture.seckillReservationService.getProcessingTimeoutMillis()).thenReturn(1000L);
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
         when(fixture.seckillReservationService.getReservationState(30L, 20L))
                 .thenReturn(state(SeckillReservationStatus.PROCESSING, 10L,
                         System.currentTimeMillis() - 2000L, "10:PROCESSING:1"));
-        BatchVoucherOrderResult result = new BatchVoucherOrderResult();
-        result.addSuccessOrderId(10L);
-        when(fixture.voucherOrderService.createClaimedVoucherOrdersBatch(anyList())).thenReturn(result);
 
         fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
                 message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
         ), fixture.channel);
 
-        verify(fixture.voucherOrderService).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
         verify(fixture.channel).basicAck(100L, false);
         verify(fixture.channel, never()).basicNack(100L, false, true);
     }
@@ -353,7 +349,6 @@ class VoucherOrderConsumerBatchTest {
             ReflectionTestUtils.setField(consumer, "claimRetryEnabled", true);
             ReflectionTestUtils.setField(consumer, "claimRetryMaxAttempts", 5);
             when(seckillReservationService.claim(any(), any(), any())).thenReturn(true);
-            when(seckillReservationService.getProcessingTimeoutMillis()).thenReturn(600_000L);
             when(seckillReservationService.commit(any(), any(), any())).thenReturn(1L);
         }
     }

@@ -127,15 +127,6 @@ public class VoucherOrderConsumer {
             return false;
         }
 
-        long nowMillis = System.currentTimeMillis();
-        if (status == SeckillReservationStatus.PROCESSING
-                && state.isProcessingTimedOut(nowMillis, seckillReservationService.getProcessingTimeoutMillis())
-                && seckillReservationService.claim(item.getVoucherId(), item.getUserId(), item.getOrderId())) {
-            log.warn("Reclaimed timed-out PROCESSING reservation, messageId={}, orderId={}, userId={}, voucherId={}, reservation={}",
-                    item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(), state.getRawValue());
-            return true;
-        }
-
         String reason = buildClaimFailureRequeueReason(status);
         retryClaimLaterOrSendToFailureOutlet(item, channel, state, reason);
         return false;
@@ -232,7 +223,7 @@ public class VoucherOrderConsumer {
 
     private String buildClaimFailureRequeueReason(SeckillReservationStatus status) {
         if (status == SeckillReservationStatus.PROCESSING) {
-            return "PROCESSING_NOT_TIMEOUT_OR_RECLAIM_RACE";
+            return "PROCESSING_WAIT_RECONCILE";
         }
         if (status == SeckillReservationStatus.MISSING) {
             return "MISSING_RESERVATION";
