@@ -43,16 +43,15 @@ public class SeckillOrderDeadLetterConsumer {
                 return;
             }
 
-            Long rollback = seckillReservationService.rollback(voucherId, userId, orderId);
-            if (rollback != null && (rollback == 0L || rollback == 1L)) {
-                markFailedAfterDlqRollback(messageId, orderId, userId, voucherId,
-                        "DLQ_ROLLBACK_DONE_ORDER_NOT_FOUND result=" + rollback);
-                log.warn("Seckill order DLQ message rolled back Redis state, messageId={}, orderId={}, userId={}, voucherId={}, rollback={}",
-                        messageId, orderId, userId, voucherId, rollback);
+            if (seckillReservationService.hasPending(orderId)) {
+                markFailedAfterDlqInspection(messageId, orderId, userId, voucherId,
+                        "DLQ_ORDER_NOT_FOUND_WAIT_REDIS_RECONCILE");
+                log.warn("Seckill order DLQ message marked failed and waits Redis-MySQL reconcile, messageId={}, orderId={}, userId={}, voucherId={}",
+                        messageId, orderId, userId, voucherId);
             } else {
-                markNeedManual(messageId, orderId, userId, voucherId, "DLQ_ROLLBACK_SKIPPED");
-                log.error("Seckill order DLQ reservation rollback skipped, messageId={}, orderId={}, userId={}, voucherId={}, rollback={}",
-                        messageId, orderId, userId, voucherId, rollback);
+                markNeedManual(messageId, orderId, userId, voucherId, "DLQ_ORDER_AND_REDIS_PENDING_ABSENT");
+                log.warn("Seckill order DLQ message marked NEED_MANUAL because order and Redis pending are absent, messageId={}, orderId={}, userId={}, voucherId={}",
+                        messageId, orderId, userId, voucherId);
             }
             channel.basicAck(deliveryTag, false);
         } catch (Exception e) {
@@ -73,12 +72,12 @@ public class SeckillOrderDeadLetterConsumer {
         }
     }
 
-    private void markFailedAfterDlqRollback(Long messageId, Long orderId, Long userId, Long voucherId, String reason) {
+    private void markFailedAfterDlqInspection(Long messageId, Long orderId, Long userId, Long voucherId, String reason) {
         boolean updated = messageId != null
-                ? mqMessageService.markFailedAfterDlqRollback(messageId, reason)
-                : mqMessageService.markFailedAfterDlqRollbackByBiz(IMqMessageService.SECKILL_ORDER_BIZ_TYPE, orderId, reason);
+                ? mqMessageService.markFailedAfterDlqInspection(messageId, reason)
+                : mqMessageService.markFailedAfterDlqInspectionByBiz(IMqMessageService.SECKILL_ORDER_BIZ_TYPE, orderId, reason);
         if (!updated) {
-            log.error("Mark DLQ seckill mq message FAILED after rollback failed, messageId={}, orderId={}, userId={}, voucherId={}, reason={}",
+            log.error("Mark DLQ seckill mq message FAILED after inspection failed, messageId={}, orderId={}, userId={}, voucherId={}, reason={}",
                     messageId, orderId, userId, voucherId, reason);
         }
     }

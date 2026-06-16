@@ -416,7 +416,7 @@ authorization: {token}
 
 - Redis pending 对账负责判断 Redis 预扣资格最终有没有形成 MySQL 订单。
 - `tb_mq_message` 只负责消息落表后的 RabbitMQ 投递可靠性、重试、NEED_MANUAL 巡检和消费成功状态。
-- DLQ 是消费失败异常兜底，Redis 回滚必须经过 reservation + orderId CAS。
+- DLQ 是消费失败异常兜底，只做 MySQL / Redis pending 核查和消息状态标记；Redis 回滚统一由 Redis-MySQL 对账任务经过 reservation + orderId CAS 执行。
 - Transactional Outbox 已用于订单创建后的超时关单事件。
 
 ## 三轮可靠性边界

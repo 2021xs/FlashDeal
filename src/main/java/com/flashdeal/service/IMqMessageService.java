@@ -26,9 +26,9 @@ public interface IMqMessageService extends IService<MqMessage> {
 
     boolean markConsumedByBiz(String bizType, Long bizId);
 
-    boolean markFailedAfterDlqRollback(Long messageId, String reason);
+    boolean markFailedAfterDlqInspection(Long messageId, String reason);
 
-    boolean markFailedAfterDlqRollbackByBiz(String bizType, Long bizId, String reason);
+    boolean markFailedAfterDlqInspectionByBiz(String bizType, Long bizId, String reason);
 
     boolean markNeedManual(Long messageId, String reason);
 

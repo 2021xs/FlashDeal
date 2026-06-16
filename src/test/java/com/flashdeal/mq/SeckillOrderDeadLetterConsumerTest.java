@@ -35,24 +35,27 @@ class SeckillOrderDeadLetterConsumerTest {
     }
 
     @Test
-    void missingOrderShouldRollbackRedisAndMarkFailed() throws Exception {
+    void missingOrderWithPendingShouldMarkFailedAndWaitForRedisReconcile() throws Exception {
         Fixture fixture = new Fixture();
-        when(fixture.seckillReservationService.rollback(30L, 20L, 10L)).thenReturn(0L);
+        when(fixture.seckillReservationService.hasPending(10L)).thenReturn(true);
 
         fixture.consumer.handleDeadLetter(orderMessage(), message(), fixture.channel);
 
-        verify(fixture.mqMessageService).markFailedAfterDlqRollback(eq(1L), any(String.class));
+        verify(fixture.mqMessageService).markFailedAfterDlqInspection(
+                eq(1L), eq("DLQ_ORDER_NOT_FOUND_WAIT_REDIS_RECONCILE"));
+        verify(fixture.seckillReservationService, never()).rollback(any(), any(), any());
         verify(fixture.channel).basicAck(100L, false);
     }
 
     @Test
-    void rollbackFailureShouldMarkNeedManualAndAck() throws Exception {
+    void missingOrderWithoutPendingShouldMarkNeedManualAndAck() throws Exception {
         Fixture fixture = new Fixture();
-        when(fixture.seckillReservationService.rollback(30L, 20L, 10L)).thenReturn(2L);
+        when(fixture.seckillReservationService.hasPending(10L)).thenReturn(false);
 
         fixture.consumer.handleDeadLetter(orderMessage(), message(), fixture.channel);
 
-        verify(fixture.mqMessageService).markNeedManual(eq(1L), eq("DLQ_ROLLBACK_SKIPPED"));
+        verify(fixture.mqMessageService).markNeedManual(eq(1L), eq("DLQ_ORDER_AND_REDIS_PENDING_ABSENT"));
+        verify(fixture.seckillReservationService, never()).rollback(any(), any(), any());
         verify(fixture.channel).basicAck(100L, false);
     }
 
@@ -82,6 +85,9 @@ class SeckillOrderDeadLetterConsumerTest {
             ReflectionTestUtils.setField(consumer, "voucherOrderService", voucherOrderService);
             ReflectionTestUtils.setField(consumer, "seckillReservationService", seckillReservationService);
             ReflectionTestUtils.setField(consumer, "mqMessageService", mqMessageService);
+            when(mqMessageService.markConsumed(1L)).thenReturn(true);
+            when(mqMessageService.markFailedAfterDlqInspection(eq(1L), any(String.class))).thenReturn(true);
+            when(mqMessageService.markNeedManual(eq(1L), any(String.class))).thenReturn(true);
         }
     }
 }

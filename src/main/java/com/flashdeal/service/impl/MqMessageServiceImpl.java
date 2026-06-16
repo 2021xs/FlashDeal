@@ -97,7 +97,7 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     }
 
     @Override
-    public boolean markFailedAfterDlqRollback(Long messageId, String reason) {
+    public boolean markFailedAfterDlqInspection(Long messageId, String reason) {
         return updateStatusIfIn(messageId,
                 Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.CONFIRM_FAILED,
                         MqMessageStatus.RETURNED, MqMessageStatus.CONFIRMED),
@@ -107,7 +107,7 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     }
 
     @Override
-    public boolean markFailedAfterDlqRollbackByBiz(String bizType, Long bizId, String reason) {
+    public boolean markFailedAfterDlqInspectionByBiz(String bizType, Long bizId, String reason) {
         return updateStatusByBizIfIn(bizType, bizId,
                 Arrays.asList(MqMessageStatus.INIT, MqMessageStatus.SENT, MqMessageStatus.RETRYING, MqMessageStatus.CONFIRM_FAILED,
                         MqMessageStatus.RETURNED, MqMessageStatus.CONFIRMED),
