@@ -39,7 +39,7 @@ public class VoucherOrderProducer {
     @PostConstruct
     public void initCallbacks() {
         rabbitTemplate.setConfirmCallback((correlationData, ack, cause) -> {
-            if (isOutboxCorrelation(correlationData)) {
+            if (isInternalCorrelation(correlationData)) {
                 return;
             }
             Long messageId = parseMessageId(correlationData == null ? null : correlationData.getId(), "confirm");
@@ -118,6 +118,11 @@ public class VoucherOrderProducer {
                     exchange, routingKey, replyCode, replyText);
             return;
         }
+        if (message.getMessageProperties().getHeaders().containsKey(VoucherOrderConsumer.CLAIM_TRANSFER_HEADER)) {
+            log.error("Seckill claim transfer message returned, exchange={}, routingKey={}, replyCode={}, replyText={}, body={}",
+                    exchange, routingKey, replyCode, replyText, message);
+            return;
+        }
         Long messageId = parseMessageId(message.getMessageProperties().getHeaders().get("messageId"), "return");
         if (messageId == null) {
             log.error("Seckill order message returned but messageId header is missing, exchange={}, routingKey={}, replyCode={}, replyText={}, body={}",
@@ -157,10 +162,11 @@ public class VoucherOrderProducer {
         }
     }
 
-    private boolean isOutboxCorrelation(CorrelationData correlationData) {
+    private boolean isInternalCorrelation(CorrelationData correlationData) {
         return correlationData != null
                 && correlationData.getId() != null
-                && correlationData.getId().startsWith("outbox:");
+                && (correlationData.getId().startsWith("outbox:")
+                || correlationData.getId().startsWith(VoucherOrderConsumer.CLAIM_TRANSFER_CORRELATION_PREFIX));
     }
 
     private String limitReason(String reason) {

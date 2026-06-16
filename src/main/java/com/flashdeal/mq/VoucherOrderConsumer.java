@@ -15,6 +15,7 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -24,6 +25,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.flashdeal.utils.RabbitConstants.SECKILL_CLAIM_RETRY_EXCHANGE;
@@ -40,6 +42,8 @@ public class VoucherOrderConsumer {
     private static final String CLAIM_LAST_STATUS_HEADER = "x-seckill-claim-last-status";
     private static final String CLAIM_LAST_REASON_HEADER = "x-seckill-claim-last-reason";
     private static final String CLAIM_LAST_TIME_HEADER = "x-seckill-claim-last-time";
+    static final String CLAIM_TRANSFER_HEADER = "x-seckill-claim-transfer";
+    static final String CLAIM_TRANSFER_CORRELATION_PREFIX = "claim-transfer:";
 
     @Resource
     private IVoucherOrderService voucherOrderService;
@@ -64,6 +68,9 @@ public class VoucherOrderConsumer {
 
     @Value("${seckill.reservation.claim-retry.max-attempts:5}")
     private int claimRetryMaxAttempts;
+
+    @Value("${seckill.reservation.claim-transfer-confirm-timeout-ms:5000}")
+    private long claimTransferConfirmTimeoutMillis;
 
     @RabbitListener(
             queues = SECKILL_ORDER_QUEUE,
@@ -152,11 +159,14 @@ public class VoucherOrderConsumer {
                                  int retryCount,
                                  int maxAttempts) throws IOException {
         int nextRetryCount = retryCount + 1;
+        Message transferMessage = buildClaimTransferMessage(item, state, reason, nextRetryCount);
         try {
-            rabbitTemplate.convertAndSend(
+            publishClaimTransferAndWaitConfirm(
                     SECKILL_CLAIM_RETRY_EXCHANGE,
                     SECKILL_CLAIM_RETRY_ROUTING_KEY,
-                    buildClaimTransferMessage(item, state, reason, nextRetryCount));
+                    transferMessage,
+                    "retry",
+                    item);
             log.warn("Send seckill message to claim retry queue, reason={}, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, retryCount={}, maxAttempts={}, action=retry",
                     reason, item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
                     state.getStatus(), nextRetryCount, maxAttempts);
@@ -175,11 +185,14 @@ public class VoucherOrderConsumer {
                                                     String reason) throws IOException {
         int retryCount = getClaimRetryCount(item.getMessage());
         int maxAttempts = Math.max(0, claimRetryMaxAttempts);
+        Message transferMessage = buildClaimTransferMessage(item, state, reason, retryCount);
         try {
-            rabbitTemplate.convertAndSend(
+            publishClaimTransferAndWaitConfirm(
                     SECKILL_ORDER_DLX,
                     SECKILL_ORDER_DLK,
-                    buildClaimTransferMessage(item, state, reason, retryCount));
+                    transferMessage,
+                    "dlq",
+                    item);
             log.error("Send seckill message to claim failure outlet, reason={}, messageId={}, orderId={}, userId={}, voucherId={}, reservationStatus={}, retryCount={}, maxAttempts={}, action=send_to_dlq",
                     reason, item.getMessageId(), item.getOrderId(), item.getUserId(), item.getVoucherId(),
                     state.getStatus(), retryCount, maxAttempts);
@@ -198,12 +211,31 @@ public class VoucherOrderConsumer {
                                               int retryCount) {
         return MessageBuilder.withBody(item.getMessage().getBody())
                 .copyProperties(item.getMessage().getMessageProperties())
+                .setHeader(CLAIM_TRANSFER_HEADER, true)
                 .setHeader(CLAIM_RETRY_COUNT_HEADER, retryCount)
                 .setHeader(CLAIM_LAST_STATUS_HEADER, state.getStatus() == null ? null : state.getStatus().name())
                 .setHeader(CLAIM_LAST_REASON_HEADER, reason)
                 .setHeader(CLAIM_LAST_TIME_HEADER, System.currentTimeMillis())
                 .setDeliveryMode(MessageDeliveryMode.PERSISTENT)
                 .build();
+    }
+
+    private void publishClaimTransferAndWaitConfirm(String exchange,
+                                                    String routingKey,
+                                                    Message message,
+                                                    String action,
+                                                    BatchMessageItem item) throws Exception {
+        CorrelationData correlationData = new CorrelationData(CLAIM_TRANSFER_CORRELATION_PREFIX
+                + action + ":" + item.getMessageId() + ":" + System.nanoTime());
+        rabbitTemplate.convertAndSend(exchange, routingKey, message, correlationData);
+        CorrelationData.Confirm confirm = correlationData.getFuture().get(
+                Math.max(1L, claimTransferConfirmTimeoutMillis), TimeUnit.MILLISECONDS);
+        if (!confirm.isAck()) {
+            throw new IllegalStateException("claim transfer publisher confirm nack, reason=" + confirm.getReason());
+        }
+        if (correlationData.getReturnedMessage() != null) {
+            throw new IllegalStateException("claim transfer message returned by broker");
+        }
     }
 
     private int getClaimRetryCount(Message message) {

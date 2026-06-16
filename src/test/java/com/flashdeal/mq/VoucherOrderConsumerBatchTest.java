@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -24,6 +25,7 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -128,7 +130,7 @@ class VoucherOrderConsumerBatchTest {
         ), fixture.channel);
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
-        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class), any(CorrelationData.class));
         verify(fixture.channel).basicAck(100L, false);
         verify(fixture.channel, never()).basicNack(100L, false, true);
     }
@@ -146,7 +148,7 @@ class VoucherOrderConsumerBatchTest {
         ), fixture.channel);
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
-        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class), any(CorrelationData.class));
         verify(fixture.channel).basicAck(100L, false);
         verify(fixture.channel, never()).basicNack(100L, false, true);
     }
@@ -164,9 +166,10 @@ class VoucherOrderConsumerBatchTest {
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
         ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
-        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), captor.capture());
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), captor.capture(), any(CorrelationData.class));
         Assertions.assertEquals(3, captor.getValue().getMessageProperties().getHeaders().get("x-seckill-claim-retry-count"));
         Assertions.assertEquals("MISSING", captor.getValue().getMessageProperties().getHeaders().get("x-seckill-claim-last-status"));
+        Assertions.assertEquals(true, captor.getValue().getMessageProperties().getHeaders().get(VoucherOrderConsumer.CLAIM_TRANSFER_HEADER));
         verify(fixture.channel).basicAck(100L, false);
         verify(fixture.channel, never()).basicNack(100L, false, true);
     }
@@ -183,8 +186,8 @@ class VoucherOrderConsumerBatchTest {
         fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(source), fixture.channel);
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
-        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_ORDER_DLX), eq(SECKILL_ORDER_DLK), any(Message.class));
-        verify(fixture.rabbitTemplate, never()).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_ORDER_DLX), eq(SECKILL_ORDER_DLK), any(Message.class), any(CorrelationData.class));
+        verify(fixture.rabbitTemplate, never()).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class), any(CorrelationData.class));
         verify(fixture.channel).basicAck(100L, false);
         verify(fixture.channel, never()).basicNack(100L, false, true);
     }
@@ -202,7 +205,7 @@ class VoucherOrderConsumerBatchTest {
         ), fixture.channel);
 
         verify(fixture.channel).basicAck(100L, false);
-        verify(fixture.rabbitTemplate, never()).convertAndSend(any(String.class), any(String.class), any(Message.class));
+        verify(fixture.rabbitTemplate, never()).convertAndSend(any(String.class), any(String.class), any(Message.class), any(CorrelationData.class));
         verify(fixture.channel, never()).basicNack(100L, false, true);
     }
 
@@ -213,7 +216,7 @@ class VoucherOrderConsumerBatchTest {
         when(fixture.seckillReservationService.getReservationState(30L, 20L))
                 .thenReturn(state(SeckillReservationStatus.MISSING, null, null, null));
         doThrow(new RuntimeException("retry publish failed"))
-                .when(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+                .when(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class), any(CorrelationData.class));
 
         fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
                 message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
@@ -232,7 +235,7 @@ class VoucherOrderConsumerBatchTest {
         Message source = message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L);
         source.getMessageProperties().setHeader("x-seckill-claim-retry-count", 5);
         doThrow(new RuntimeException("dlq publish failed"))
-                .when(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_ORDER_DLX), eq(SECKILL_ORDER_DLK), any(Message.class));
+                .when(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_ORDER_DLX), eq(SECKILL_ORDER_DLK), any(Message.class), any(CorrelationData.class));
 
         fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(source), fixture.channel);
 
@@ -253,9 +256,58 @@ class VoucherOrderConsumerBatchTest {
         ), fixture.channel);
 
         verify(fixture.voucherOrderService, never()).createClaimedVoucherOrdersBatch(anyList());
-        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class));
+        verify(fixture.rabbitTemplate).convertAndSend(eq(SECKILL_CLAIM_RETRY_EXCHANGE), eq(SECKILL_CLAIM_RETRY_ROUTING_KEY), any(Message.class), any(CorrelationData.class));
         verify(fixture.channel).basicAck(100L, false);
         verify(fixture.channel, never()).basicNack(100L, false, true);
+    }
+
+    @Test
+    void retryPublishConfirmNackShouldFallbackRequeueWithoutAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.MISSING, null, null, null));
+        doAnswer(invocation -> {
+            CorrelationData correlationData = invocation.getArgument(3);
+            correlationData.getFuture().set(new CorrelationData.Confirm(false, "nack"));
+            return null;
+        }).when(fixture.rabbitTemplate).convertAndSend(
+                eq(SECKILL_CLAIM_RETRY_EXCHANGE),
+                eq(SECKILL_CLAIM_RETRY_ROUTING_KEY),
+                any(Message.class),
+                any(CorrelationData.class));
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
+        ), fixture.channel);
+
+        verify(fixture.channel).basicNack(100L, false, true);
+        verify(fixture.channel, never()).basicAck(100L, false);
+    }
+
+    @Test
+    void retryPublishReturnedMessageShouldFallbackRequeueWithoutAck() throws Exception {
+        Fixture fixture = new Fixture();
+        when(fixture.seckillReservationService.claim(30L, 20L, 10L)).thenReturn(false);
+        when(fixture.seckillReservationService.getReservationState(30L, 20L))
+                .thenReturn(state(SeckillReservationStatus.MISSING, null, null, null));
+        doAnswer(invocation -> {
+            CorrelationData correlationData = invocation.getArgument(3);
+            correlationData.setReturnedMessage(invocation.getArgument(2));
+            correlationData.getFuture().set(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(fixture.rabbitTemplate).convertAndSend(
+                eq(SECKILL_CLAIM_RETRY_EXCHANGE),
+                eq(SECKILL_CLAIM_RETRY_ROUTING_KEY),
+                any(Message.class),
+                any(CorrelationData.class));
+
+        fixture.consumer.handleSeckillOrderBatch(Collections.singletonList(
+                message(fixture.objectMapper, 1L, 10L, 20L, 30L, 100L)
+        ), fixture.channel);
+
+        verify(fixture.channel).basicNack(100L, false, true);
+        verify(fixture.channel, never()).basicAck(100L, false);
     }
 
     @Test
@@ -348,8 +400,15 @@ class VoucherOrderConsumerBatchTest {
             ReflectionTestUtils.setField(consumer, "retryTimes", 2);
             ReflectionTestUtils.setField(consumer, "claimRetryEnabled", true);
             ReflectionTestUtils.setField(consumer, "claimRetryMaxAttempts", 5);
+            ReflectionTestUtils.setField(consumer, "claimTransferConfirmTimeoutMillis", 100L);
             when(seckillReservationService.claim(any(), any(), any())).thenReturn(true);
             when(seckillReservationService.commit(any(), any(), any())).thenReturn(1L);
+            doAnswer(invocation -> {
+                CorrelationData correlationData = invocation.getArgument(3);
+                correlationData.getFuture().set(new CorrelationData.Confirm(true, null));
+                return null;
+            }).when(rabbitTemplate).convertAndSend(
+                    any(String.class), any(String.class), any(Message.class), any(CorrelationData.class));
         }
     }
 }
