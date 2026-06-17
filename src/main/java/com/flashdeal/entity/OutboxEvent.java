@@ -29,6 +29,7 @@ public class OutboxEvent implements Serializable {
     private Integer maxRetryCount;
     private LocalDateTime nextRetryTime;
     private String failReason;
+    private LocalDateTime lastAlertTime;
     private LocalDateTime expireTime;
     private LocalDateTime sentTime;
     private LocalDateTime createdTime;

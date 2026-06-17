@@ -155,6 +155,7 @@ class ConvertAndSendExceptionValidationTest {
                 + "max_retry_count INT NOT NULL DEFAULT 3,"
                 + "next_retry_time DATETIME DEFAULT NULL,"
                 + "fail_reason VARCHAR(512) DEFAULT NULL,"
+                + "last_alert_time DATETIME DEFAULT NULL,"
                 + "create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
                 + "update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
                 + "KEY idx_biz (biz_type, biz_id),"

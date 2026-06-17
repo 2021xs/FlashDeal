@@ -91,6 +91,27 @@ public class OutboxEventServiceImpl extends ServiceImpl<OutboxEventMapper, Outbo
     }
 
     @Override
+    public List<OutboxEvent> listNeedManualForAlert(String eventType, LocalDateTime suppressBefore, int limit) {
+        return query()
+                .eq("event_type", eventType)
+                .eq("status", OutboxEventStatus.NEED_MANUAL.name())
+                .and(wrapper -> wrapper.isNull("last_alert_time").or().le("last_alert_time", suppressBefore))
+                .orderByAsc("updated_time")
+                .last("LIMIT " + Math.max(1, limit))
+                .list();
+    }
+
+    @Override
+    public boolean markNeedManualAlerted(Long id, LocalDateTime alertTime, LocalDateTime suppressBefore) {
+        return update()
+                .set("last_alert_time", alertTime)
+                .eq("id", id)
+                .eq("status", OutboxEventStatus.NEED_MANUAL.name())
+                .and(wrapper -> wrapper.isNull("last_alert_time").or().le("last_alert_time", suppressBefore))
+                .update();
+    }
+
+    @Override
     public List<OutboxEvent> listRedisStockRecoveryPublishable(LocalDateTime now, int limit) {
         return baseMapper.selectRedisStockRecoveryPublishable(now, Math.max(1, limit));
     }

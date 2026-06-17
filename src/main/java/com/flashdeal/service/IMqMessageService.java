@@ -57,6 +57,8 @@ public interface IMqMessageService extends IService<MqMessage> {
 
     List<MqMessage> listNeedManualMessages(String bizType, int limit);
 
+    boolean markNeedManualAlerted(Long messageId, LocalDateTime alertTime, LocalDateTime suppressBefore);
+
     boolean markRetrying(Long messageId,
                          Collection<MqMessageStatus> fromStatuses,
                          Integer expectedRetryCount,

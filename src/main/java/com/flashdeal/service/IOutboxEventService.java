@@ -29,6 +29,10 @@ public interface IOutboxEventService extends IService<OutboxEvent> {
 
     List<OutboxEvent> listNeedManual(int limit);
 
+    List<OutboxEvent> listNeedManualForAlert(String eventType, LocalDateTime suppressBefore, int limit);
+
+    boolean markNeedManualAlerted(Long id, LocalDateTime alertTime, LocalDateTime suppressBefore);
+
     List<OutboxEvent> listRedisStockRecoveryPublishable(LocalDateTime now, int limit);
 
     int recoverStuckRedisStockRecovery(LocalDateTime staleBefore, LocalDateTime nextRetryTime, int limit);

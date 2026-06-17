@@ -41,6 +41,8 @@ public class MqMessage implements Serializable {
 
     private String failReason;
 
+    private LocalDateTime lastAlertTime;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;

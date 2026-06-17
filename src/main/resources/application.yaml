@@ -88,6 +88,7 @@ seckill:
     enabled: true
     fixed-delay-seconds: 60
     batch-size: 100
+    alert-suppress-seconds: 1800
   redis-reconcile:
     enabled: true
     fixed-delay-seconds: 60

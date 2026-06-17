@@ -85,6 +85,26 @@ public class OrderTimeoutCloseFailServiceImpl
     }
 
     @Override
+    public List<OrderTimeoutCloseFail> listNeedManualForAlert(LocalDateTime suppressBefore, int limit) {
+        return query()
+                .eq("status", STATUS_NEED_MANUAL)
+                .and(wrapper -> wrapper.isNull("last_alert_time").or().le("last_alert_time", suppressBefore))
+                .orderByAsc("update_time")
+                .last("LIMIT " + Math.max(1, limit))
+                .list();
+    }
+
+    @Override
+    public boolean markNeedManualAlerted(Long id, LocalDateTime alertTime, LocalDateTime suppressBefore) {
+        return update()
+                .set("last_alert_time", alertTime)
+                .eq("id", id)
+                .eq("status", STATUS_NEED_MANUAL)
+                .and(wrapper -> wrapper.isNull("last_alert_time").or().le("last_alert_time", suppressBefore))
+                .update();
+    }
+
+    @Override
     public boolean claimRetry(OrderTimeoutCloseFail fail) {
         return baseMapper.claimRetry(fail.getId(), fail.getFailCount()) > 0;
     }

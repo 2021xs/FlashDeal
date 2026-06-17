@@ -56,10 +56,6 @@ public class RedisStockRecoveryOutboxTask {
         for (OutboxEvent event : events) {
             recoverOne(event);
         }
-        for (OutboxEvent event : outboxEventService.listRedisStockRecoveryNeedManual(safeBatchSize())) {
-            log.error("Redis stock recovery outbox event NEED_MANUAL, bizKey={}, retryCount={}, failReason={}",
-                    event.getBizKey(), event.getRetryCount(), event.getFailReason());
-        }
     }
 
     void recoverOne(OutboxEvent event) {

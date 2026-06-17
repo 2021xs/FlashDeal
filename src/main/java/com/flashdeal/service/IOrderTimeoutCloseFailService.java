@@ -36,6 +36,10 @@ public interface IOrderTimeoutCloseFailService extends IService<OrderTimeoutClos
 
     List<OrderTimeoutCloseFail> listRetryable(LocalDateTime now, int limit);
 
+    List<OrderTimeoutCloseFail> listNeedManualForAlert(LocalDateTime suppressBefore, int limit);
+
+    boolean markNeedManualAlerted(Long id, LocalDateTime alertTime, LocalDateTime suppressBefore);
+
     boolean claimRetry(OrderTimeoutCloseFail fail);
 
     boolean markRetryFailed(OrderTimeoutCloseFail fail,

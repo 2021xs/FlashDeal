@@ -213,6 +213,16 @@ public class MqMessageServiceImpl extends ServiceImpl<MqMessageMapper, MqMessage
     }
 
     @Override
+    public boolean markNeedManualAlerted(Long messageId, LocalDateTime alertTime, LocalDateTime suppressBefore) {
+        return update()
+                .set("last_alert_time", alertTime)
+                .eq("id", messageId)
+                .eq("status", MqMessageStatus.NEED_MANUAL.name())
+                .and(wrapper -> wrapper.isNull("last_alert_time").or().le("last_alert_time", suppressBefore))
+                .update();
+    }
+
+    @Override
     public boolean markRetrying(Long messageId,
                                 Collection<MqMessageStatus> fromStatuses,
                                 Integer expectedRetryCount,

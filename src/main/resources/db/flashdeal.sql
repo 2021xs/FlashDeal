@@ -284,9 +284,11 @@ CREATE TABLE `tb_mq_message` (
   `fail_reason` varchar(512) NULL DEFAULT NULL COMMENT '失败原因',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `last_alert_time` datetime NULL DEFAULT NULL COMMENT 'last manual alert time',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `uk_biz_type_biz_id` (`biz_type`, `biz_id`) USING BTREE,
   KEY `idx_status_next_retry_time` (`status`, `next_retry_time`) USING BTREE,
+  KEY `idx_status_last_alert_time` (`status`, `last_alert_time`) USING BTREE,
   KEY `idx_update_time` (`update_time`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = 'MQ可靠消息表' ROW_FORMAT = Compact;
 
@@ -307,6 +309,7 @@ CREATE TABLE `tb_outbox_event` (
   `max_retry_count` int(11) NOT NULL DEFAULT 5,
   `next_retry_time` datetime DEFAULT NULL,
   `fail_reason` varchar(512) DEFAULT NULL,
+  `last_alert_time` datetime DEFAULT NULL COMMENT 'last manual alert time',
   `expire_time` datetime DEFAULT NULL,
   `sent_time` datetime DEFAULT NULL,
   `created_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -315,6 +318,7 @@ CREATE TABLE `tb_outbox_event` (
   UNIQUE KEY `uk_event_id` (`event_id`),
   UNIQUE KEY `uk_event_type_biz_key` (`event_type`, `biz_key`),
   KEY `idx_status_next_retry_time` (`status`, `next_retry_time`),
+  KEY `idx_status_last_alert_time` (`status`, `last_alert_time`),
   KEY `idx_status_updated_time` (`status`, `updated_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Transactional Outbox event';
 
@@ -334,9 +338,11 @@ CREATE TABLE `tb_order_timeout_close_fail` (
   `next_retry_time` datetime NULL DEFAULT NULL COMMENT '下次重试时间',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `last_alert_time` datetime NULL DEFAULT NULL COMMENT 'last manual alert time',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `uk_order_id` (`order_id`) USING BTREE,
   KEY `idx_status_next_retry_time` (`status`, `next_retry_time`) USING BTREE,
+  KEY `idx_status_last_alert_time` (`status`, `last_alert_time`) USING BTREE,
   KEY `idx_status_update_time` (`status`, `update_time`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '订单超时关单失败事件表' ROW_FORMAT = Compact;
 

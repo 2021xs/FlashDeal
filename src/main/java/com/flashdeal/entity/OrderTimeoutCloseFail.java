@@ -37,6 +37,8 @@ public class OrderTimeoutCloseFail implements Serializable {
 
     private LocalDateTime nextRetryTime;
 
+    private LocalDateTime lastAlertTime;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;

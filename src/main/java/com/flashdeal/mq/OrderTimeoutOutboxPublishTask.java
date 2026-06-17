@@ -54,7 +54,6 @@ public class OrderTimeoutOutboxPublishTask {
         for (OutboxEvent event : events) {
             publishOne(event);
         }
-        inspectNeedManual();
     }
 
     void publishOne(OutboxEvent event) {
@@ -87,13 +86,6 @@ public class OrderTimeoutOutboxPublishTask {
             return 0L;
         }
         return Math.max(0L, Duration.between(now, expireTime).toMillis());
-    }
-
-    private void inspectNeedManual() {
-        for (OutboxEvent event : outboxEventService.listNeedManual(safeBatchSize())) {
-            log.error("Order timeout outbox event NEED_MANUAL, eventType={}, bizKey={}, retryCount={}, failReason={}",
-                    event.getEventType(), event.getBizKey(), event.getRetryCount(), event.getFailReason());
-        }
     }
 
     private long calculateBackoffSeconds(int retryCount) {
