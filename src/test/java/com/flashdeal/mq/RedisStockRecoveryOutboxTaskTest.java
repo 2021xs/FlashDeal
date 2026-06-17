@@ -8,6 +8,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalDateTime;
+
+import org.mockito.ArgumentCaptor;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
@@ -40,7 +45,10 @@ class RedisStockRecoveryOutboxTaskTest {
 
         fixture.task.recoverOne(event);
 
-        verify(fixture.outboxEventService).markPublishFailed(eq(event), any(), any());
+        ArgumentCaptor<LocalDateTime> nextRetryCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(fixture.outboxEventService).markPublishFailed(eq(event), nextRetryCaptor.capture(), any());
+        long delaySeconds = java.time.Duration.between(LocalDateTime.now(), nextRetryCaptor.getValue()).getSeconds();
+        assertTrue(delaySeconds >= 119L && delaySeconds <= 121L);
         verify(fixture.outboxEventService, never()).markSent(event);
     }
 
@@ -54,7 +62,8 @@ class RedisStockRecoveryOutboxTaskTest {
             ReflectionTestUtils.setField(task, "outboxEventService", outboxEventService);
             ReflectionTestUtils.setField(task, "stringRedisTemplate", redisTemplate);
             ReflectionTestUtils.setField(task, "objectMapper", objectMapper);
-            ReflectionTestUtils.setField(task, "retryDelaySeconds", 60L);
+            ReflectionTestUtils.setField(task, "retryBaseDelaySeconds", 60L);
+            ReflectionTestUtils.setField(task, "retryMaxDelaySeconds", 3600L);
         }
 
         private OutboxEvent event() throws Exception {
@@ -68,7 +77,7 @@ class RedisStockRecoveryOutboxTaskTest {
                     .setEventType("REDIS_STOCK_RECOVERY")
                     .setBizKey("order:10")
                     .setStatus("INIT")
-                    .setRetryCount(0)
+                    .setRetryCount(1)
                     .setPayload(objectMapper.writeValueAsString(message));
         }
     }

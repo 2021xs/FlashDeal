@@ -41,8 +41,11 @@ public class RedisStockRecoveryOutboxTask {
     @Value("${outbox.redis-stock-recovery.sending-timeout-seconds:60}")
     private long sendingTimeoutSeconds;
 
-    @Value("${outbox.redis-stock-recovery.retry-delay-seconds:60}")
-    private long retryDelaySeconds;
+    @Value("${outbox.redis-stock-recovery.retry-base-delay-seconds:60}")
+    private long retryBaseDelaySeconds;
+
+    @Value("${outbox.redis-stock-recovery.retry-max-delay-seconds:3600}")
+    private long retryMaxDelaySeconds;
 
     @Scheduled(fixedDelayString = "#{${outbox.redis-stock-recovery.publish-interval-seconds:10} * 1000}")
     public void recoverRedisStock() {
@@ -78,11 +81,26 @@ public class RedisStockRecoveryOutboxTask {
                         event.getEventId(), message.getOrderId());
             }
         } catch (Exception e) {
-            LocalDateTime nextRetryTime = LocalDateTime.now().plusSeconds(Math.max(1L, retryDelaySeconds));
+            int nextRetryCount = safeRetryCount(event) + 1;
+            LocalDateTime nextRetryTime = LocalDateTime.now().plusSeconds(calculateBackoffSeconds(nextRetryCount));
             boolean updated = outboxEventService.markPublishFailed(event, nextRetryTime, summarizeException(e));
-            log.error("Redis stock recovery outbox event failed, eventId={}, bizKey={}, updated={}",
-                    event.getEventId(), event.getBizKey(), updated, e);
+            log.error("Redis stock recovery outbox event failed, eventId={}, bizKey={}, retryCount={}, updated={}",
+                    event.getEventId(), event.getBizKey(), nextRetryCount, updated, e);
         }
+    }
+
+    private long calculateBackoffSeconds(int retryCount) {
+        long base = Math.max(1L, retryBaseDelaySeconds);
+        long max = Math.max(base, retryMaxDelaySeconds);
+        long delay = base;
+        for (int i = 1; i < retryCount && delay < max; i++) {
+            delay = Math.min(max, delay * 2);
+        }
+        return delay;
+    }
+
+    private int safeRetryCount(OutboxEvent event) {
+        return event.getRetryCount() == null ? 0 : event.getRetryCount();
     }
 
     private int safeBatchSize() {
